@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 min-h-screen antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+}
+
+/* Document styling for step 6 & print */
+.document-page {
+  font-family: "Times New Roman", Times, serif;
+  color: #111827;
+  background-color: #ffffff;
+  padding: 2.5cm 2cm;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  max-width: 210mm;
+  min-height: 297mm;
+  margin: 0 auto;
+  line-height: 1.45;
+}
+
+.document-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0 20px 0;
+  font-size: 13px;
+  font-family: "Times New Roman", Times, serif;
+}
+
+.document-table th,
+.document-table td {
+  border: 1px solid #333333;
+  padding: 5px 6px;
+  vertical-align: middle;
+}
+
+.document-table th {
+  background-color: #f8fafc;
+  font-weight: bold;
+  text-align: center;
+}
+
+@media print {
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .document-page {
+    box-shadow: none !important;
+    margin: 0 !important;
+    padding: 1.5cm 1.5cm !important;
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+
+  .page-break {
+    page-break-before: always;
+  }
+
+  @page {
+    size: A4;
+    margin: 1.5cm;
+  }
+}

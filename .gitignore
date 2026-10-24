@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# next.js build output
+.next/
+out/
+
+# secrets & runtime data
+data/config.json
+data/exams.json
+*.log
+
+# env files
+.env
+.env.local
+.env*.local
+
+# misc
+.DS_Store
+*.pem
+.vercel
