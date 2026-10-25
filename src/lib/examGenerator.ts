@@ -1,4 +1,4 @@
-import { ExamMatrix, ExamSpec, ExamVariant, ExamVariantQuestion, FullExamPackage, Question, QuestionType, Level } from './types';
+import { ExamMatrix, ExamSpec, ExamVariant, ExamVariantQuestion, FullExamPackage, Question, QuestionType, Level, LEVELS } from './types';
 import { generateSpec } from './specGenerator';
 
 export interface GenerateExamOptions {
@@ -11,6 +11,16 @@ export interface GenerateExamOptions {
   chosenQuestionIds?: string[]; // optionally enforce specific questions
 }
 
+// Báo cáo thiếu hụt: từng ô (bài × dạng × mức) trên ma trận không đủ câu trong ngân hàng
+export interface MatrixGap {
+  lessonId: string;
+  type: QuestionType;
+  level: Level;
+  missing: number;
+}
+
+const cellSuffix = (lv: Level) => lv === 'biet' ? 'b' : lv === 'hieu' ? 'h' : lv === 'vandung' ? 'vd' : 'vdc';
+
 function shuffleArray<T>(array: T[], seedStr?: string): T[] {
   const arr = [...array];
   // Simple deterministic or pseudo-random shuffle
@@ -21,11 +31,25 @@ function shuffleArray<T>(array: T[], seedStr?: string): T[] {
   return arr;
 }
 
-export function pickQuestionsForMatrix(matrix: ExamMatrix, pool: Question[], enforcedIds: string[] = []): Question[] {
+/**
+ * Bốc câu NGHIÊM NGẶT theo ma trận: mỗi câu phải đúng bài + đúng dạng + đúng mức độ
+ * của ô trên ma trận (câu Đúng/Sai khớp ở tầng 4 ý theo mức đã dàn của từng dòng).
+ * Không đủ thì ghi nhận vào gaps để hệ thống tự sinh bổ sung — tuyệt đối không
+ * lấy lệch dạng/mức hay tái sử dụng câu đã chọn như trước đây.
+ */
+export function planMatrixPicks(matrix: ExamMatrix, pool: Question[], enforcedIds: string[] = []): { picked: Question[]; gaps: MatrixGap[] } {
   const picked: Question[] = [];
   const usedIds = new Set<string>();
+  const gaps = new Map<string, MatrixGap>();
 
-  // If specific IDs were enforced and match, use them first
+  const addGap = (lessonId: string, type: QuestionType, level: Level) => {
+    const key = `${lessonId}|${type}|${level}`;
+    const g = gaps.get(key);
+    if (g) g.missing += 1;
+    else gaps.set(key, { lessonId, type, level, missing: 1 });
+  };
+
+  // Câu được chỉ định thủ công (tính năng đổi câu) dùng trước
   if (enforcedIds.length > 0) {
     for (const id of enforcedIds) {
       const q = pool.find(item => item.id === id);
@@ -36,94 +60,83 @@ export function pickQuestionsForMatrix(matrix: ExamMatrix, pool: Question[], enf
     }
   }
 
-  const findQuestion = (lessonId: string, type: QuestionType, level: Level): Question | undefined => {
-    // 1. Try exact match lesson + type + level not used
-    let match = pool.find(q => q.lessonId === lessonId && q.type === type && q.level === level && !usedIds.has(q.id));
-    if (match) return match;
+  const takeExact = (lessonId: string, type: QuestionType, level: Level): boolean => {
+    const q = pool.find(item => item.lessonId === lessonId && item.type === type && item.level === level && !usedIds.has(item.id));
+    if (!q) return false;
+    usedIds.add(q.id);
+    picked.push(q);
+    return true;
+  };
 
-    // 2. Try match lesson + type (any level)
-    match = pool.find(q => q.lessonId === lessonId && q.type === type && !usedIds.has(q.id));
-    if (match) return match;
+  const dominantLevel = (need: Record<Level, number>): Level => {
+    let best: Level = 'hieu';
+    for (const lv of LEVELS) if ((need[lv] || 0) > (need[best] || 0)) best = lv;
+    return best;
+  };
 
-    // 3. Try match type + level from any lesson
-    match = pool.find(q => q.type === type && q.level === level && !usedIds.has(q.id));
-    if (match) return match;
-
-    // 4. Try any unused question of same type
-    match = pool.find(q => q.type === type && !usedIds.has(q.id));
-    if (match) return match;
-
-    // 5. Fallback: reuse already used question
-    return pool.find(q => q.type === type);
+  // Đếm số ý theo mức của một câu Đúng/Sai
+  const tfItemCounts = (q: Question): Record<Level, number> => {
+    const counts: Record<Level, number> = { biet: 0, hieu: 0, vandung: 0, vandungcao: 0 };
+    if (Array.isArray(q.items) && q.items.length) {
+      for (const it of q.items) counts[it.level] = (counts[it.level] || 0) + 1;
+    } else {
+      counts[q.level] += 1;
+    }
+    return counts;
   };
 
   for (const row of matrix.rows) {
     const c = row.cells;
     const lId = row.lessonId;
+    const cnt = (p: 'mcq' | 'tf' | 'sa' | 'tl', lv: Level) =>
+      ((c as any)[`${p}_${cellSuffix(lv)}`] as number) || 0;
 
-    // Pick MCQ
-    for (let i = 0; i < c.mcq_b; i++) {
-      const q = findQuestion(lId, 'MCQ', 'biet');
-      if (q) { picked.push(q); usedIds.add(q.id); }
-    }
-    for (let i = 0; i < c.mcq_h; i++) {
-      const q = findQuestion(lId, 'MCQ', 'hieu');
-      if (q) { picked.push(q); usedIds.add(q.id); }
-    }
-    for (let i = 0; i < c.mcq_vd; i++) {
-      const q = findQuestion(lId, 'MCQ', 'vandung');
-      if (q) { picked.push(q); usedIds.add(q.id); }
-    }
-    for (let i = 0; i < c.mcq_vdc; i++) {
-      const q = findQuestion(lId, 'MCQ', 'vandungcao');
-      if (q) { picked.push(q); usedIds.add(q.id); }
+    // MCQ — đúng bài, đúng mức
+    for (const lv of LEVELS) {
+      for (let i = 0; i < cnt('mcq', lv); i++) {
+        if (!takeExact(lId, 'MCQ', lv)) addGap(lId, 'MCQ', lv);
+      }
     }
 
-    // Pick TF (mỗi câu TF gồm 4 ý trải theo các mức đã dàn trong ma trận)
-    const tfCount = Math.round((c.tf_b + c.tf_h + c.tf_vd + c.tf_vdc) / 4);
+    // TF — mỗi câu lớn 4 ý; chọn câu cùng bài có phân bố mức của 4 ý
+    // khớp nhất với nhu cầu mức còn lại của dòng ma trận
+    const tfNeed: Record<Level, number> = { biet: cnt('tf', 'biet'), hieu: cnt('tf', 'hieu'), vandung: cnt('tf', 'vandung'), vandungcao: cnt('tf', 'vandungcao') };
+    const tfCount = Math.round(LEVELS.reduce((s, lv) => s + tfNeed[lv], 0) / 4);
     for (let i = 0; i < tfCount; i++) {
-      const q = findQuestion(lId, 'TF', 'hieu');
-      if (q) { picked.push(q); usedIds.add(q.id); }
+      const candidates = pool.filter(q => q.lessonId === lId && q.type === 'TF' && !usedIds.has(q.id));
+      if (candidates.length === 0) {
+        addGap(lId, 'TF', dominantLevel(tfNeed));
+        continue;
+      }
+      let best = candidates[0];
+      let bestCost = Infinity;
+      for (const cand of candidates) {
+        const counts = tfItemCounts(cand);
+        const cost = LEVELS.reduce((s, lv) => s + Math.abs(tfNeed[lv] - counts[lv]), 0);
+        if (cost < bestCost) { bestCost = cost; best = cand; }
+      }
+      usedIds.add(best.id);
+      picked.push(best);
+      const counts = tfItemCounts(best);
+      for (const lv of LEVELS) if (tfNeed[lv] > 0 && counts[lv] > 0) tfNeed[lv] -= 1;
     }
 
-    // Pick SA
-    for (let i = 0; i < c.sa_b; i++) {
-      const q = findQuestion(lId, 'SA', 'biet');
-      if (q) { picked.push(q); usedIds.add(q.id); }
-    }
-    for (let i = 0; i < c.sa_h; i++) {
-      const q = findQuestion(lId, 'SA', 'hieu');
-      if (q) { picked.push(q); usedIds.add(q.id); }
-    }
-    for (let i = 0; i < c.sa_vd; i++) {
-      const q = findQuestion(lId, 'SA', 'vandung');
-      if (q) { picked.push(q); usedIds.add(q.id); }
-    }
-    for (let i = 0; i < c.sa_vdc; i++) {
-      const q = findQuestion(lId, 'SA', 'vandungcao');
-      if (q) { picked.push(q); usedIds.add(q.id); }
-    }
-
-    // Pick TL
-    for (let i = 0; i < c.tl_b; i++) {
-      const q = findQuestion(lId, 'TL', 'biet');
-      if (q) { picked.push(q); usedIds.add(q.id); }
-    }
-    for (let i = 0; i < c.tl_h; i++) {
-      const q = findQuestion(lId, 'TL', 'hieu');
-      if (q) { picked.push(q); usedIds.add(q.id); }
-    }
-    for (let i = 0; i < c.tl_vd; i++) {
-      const q = findQuestion(lId, 'TL', 'vandung');
-      if (q) { picked.push(q); usedIds.add(q.id); }
-    }
-    for (let i = 0; i < c.tl_vdc; i++) {
-      const q = findQuestion(lId, 'TL', 'vandungcao');
-      if (q) { picked.push(q); usedIds.add(q.id); }
+    // SA + TL — đúng bài, đúng mức
+    for (const lv of LEVELS) {
+      for (let i = 0; i < cnt('sa', lv); i++) {
+        if (!takeExact(lId, 'SA', lv)) addGap(lId, 'SA', lv);
+      }
+      for (let i = 0; i < cnt('tl', lv); i++) {
+        if (!takeExact(lId, 'TL', lv)) addGap(lId, 'TL', lv);
+      }
     }
   }
 
-  return picked;
+  return { picked, gaps: Array.from(gaps.values()) };
+}
+
+export function pickQuestionsForMatrix(matrix: ExamMatrix, pool: Question[], enforcedIds: string[] = []): Question[] {
+  return planMatrixPicks(matrix, pool, enforcedIds).picked;
 }
 
 export function buildExamPackage(options: GenerateExamOptions): FullExamPackage {

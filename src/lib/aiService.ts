@@ -1,5 +1,6 @@
 import { Question, Grade, QuestionType, Level, Competency, DEFAULT_GEMINI_MODEL } from './types';
 import { getConfig } from './db';
+import { findDuplicateQuestions } from './similarity';
 
 const SYSTEM_PROMPT = `Bạn là chuyên gia ra đề thi trắc nghiệm, viết theo đúng ngôn ngữ SÁCH GIÁO KHOA. QUY TẮC SỐ 1: TUYỆT ĐỐI KHÔNG BAO GIỜ sử dụng các phương án như 'Tất cả đều đúng', 'Tất cả các ý trên', 'Cả A và B đều đúng', 'Tất cả đều sai'. Phải thiết kế câu hỏi có 1 đáp án đúng duy nhất và 3 đáp án sai hoàn toàn. Nếu vi phạm, hệ thống sẽ sụp đổ do đảo lộn đáp án. QUY TẮC SỐ 2 — NGÔN NGỮ SÁCH GIÁO KHOA: mọi câu hỏi, phương án, đáp án phải dùng đúng thuật ngữ và cách diễn đạt của SGK Tin học — bộ "Kết nối tri thức với cuộc sống" (định hướng Tin học ứng dụng - ICT); TUYỆT ĐỐI KHÔNG dùng từ lóng mạng, từ viết tắt ngoài sách, từ nước ngoài khi sách đã có thuật ngữ Việt tương ứng.`;
 
@@ -234,9 +235,10 @@ export interface SingleQuestionParams {
   type: QuestionType;
   level: Level;
   samples?: string;
+  existingQuestions?: Question[]; // ngân hàng hiện có — để kiểm tra trùng kiến thức
 }
 
-export function buildSingleQuestionPrompt(params: SingleQuestionParams): string {
+export function buildSingleQuestionPrompt(params: SingleQuestionParams & { avoidContents?: string[] }): string {
   const {
     grade,
     subject = 'Tin học',
@@ -245,7 +247,8 @@ export function buildSingleQuestionPrompt(params: SingleQuestionParams): string 
     lessonDescription = '',
     type,
     level,
-    samples = ''
+    samples = '',
+    avoidContents = []
   } = params;
 
   const typeDesc: Record<QuestionType, string> = {
@@ -276,23 +279,32 @@ MỨC ĐỘ NHẬN THỨC: "${level}" — ${levelDesc[level]}.
 MÃ NĂNG LỰC ("yccd"): chỉ chọn 1 mã PHÙ HỢP với nội dung trong bộ: NLa (sử dụng & quản lý CNTT-TT), NLb (ứng xử phù hợp môi trường số), NLc (học tập & tự học với CNTT-TT), NLd (giao tiếp & hợp tác), NLe (giải quyết vấn đề với CNTT-TT). "yccdContent" mô tả cụ thể yêu cầu của chính câu hỏi này, bắt đầu bằng động từ hành vi.
 ${samples ? `THAM KHẢO PHONG CÁCH một số câu mẫu đang có trong ngân hàng (chỉ học cách trình bày, KHÔNG sao chép nội dung):
 ${samples}
+` : ''}${avoidContents.length ? `CÁC NỘI DUNG SAU ĐÃ CÓ TRONG NGÂN HÀNG CÂU HỎI — TUYỆT ĐỐI KHÔNG được lặp kiến thức, khái niệm, ví dụ, tình huống hay ý tưởng với bất kỳ nội dung nào bên dưới (phải khai thác MỘT KHÍA CẠNH KHÁC của bài học):
+${avoidContents.slice(0, 15).map((s, i) => `${i + 1}. ${s.slice(0, 250)}`).join('\n')}
 ` : ''}
 CẤU TRÍCH: mảng JSON trả về có ĐÚNG 1 phần tử duy nhất.
 ${COMMON_RULES}`;
 }
 
-/** Sinh đúng 1 câu hỏi mới (dùng cho nút "Thêm Bằng AI" trong Ngân Hàng Câu Hỏi) */
+/** Sinh đúng 1 câu hỏi mới (dùng cho nút "Thêm Bằng AI" trong Ngân Hàng Câu Hỏi).
+ * Tự kiểm tra trùng kiến thức với ngân hàng (existingQuestions): nếu trùng thì
+ * đưa nội dung bị trùng vào danh sách "phải tránh" và SINH LẠI với khía cạnh khác. */
 export async function generateSingleAIQuestion(params: SingleQuestionParams): Promise<Question> {
   const config = getConfig();
   const apiKey = config.geminiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('Chưa cấu hình API Key Gemini. Hãy bấm "Cấu hình API Key" trên thanh công cụ để nhập key (có hướng dẫn lấy key tại đó).');
   }
-  const userPrompt = buildSingleQuestionPrompt(params);
 
+  const existing = params.existingQuestions || [];
+  const avoidContents: string[] = [];
   let lastError: any = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  let lastDupInfo = '';
+  const MAX_ATTEMPTS = 4;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
+      const userPrompt = buildSingleQuestionPrompt({ ...params, avoidContents });
       const raw = await callGemini(SYSTEM_PROMPT, userPrompt, apiKey, config.geminiModel || DEFAULT_GEMINI_MODEL);
       const parsed = validateAndCleanAIResponse(raw);
       const item = parsed[0];
@@ -315,30 +327,49 @@ export async function generateSingleAIQuestion(params: SingleQuestionParams): Pr
       }
       if (!item.q) throw new Error('Câu hỏi thiếu nội dung');
 
-      return {
+      const candidate: Question = {
         ...item,
-        id: `ai_${Date.now()}`,
+        id: `ai_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         grade: params.grade,
         subject: params.subject || 'Tin học',
         topicId: '',
         lessonId: params.lessonId,
         points: params.type === 'MCQ' ? 0.25 : params.type === 'TF' ? 1.0 : params.type === 'SA' ? 0.25 : 1.0
-      } as Question;
+      };
+
+      // Hậu kiểm trùng kiến thức với ngân hàng (cùng bài)
+      const dups = findDuplicateQuestions(candidate, existing);
+      if (dups.length > 0) {
+        lastDupInfo = dups.slice(0, 3).map(d => `- ${d.question.q.slice(0, 100)} (giống ${Math.round(d.score * 100)}%)`).join('\n');
+        for (const d of dups.slice(0, 5)) {
+          const content = d.question.q;
+          if (!avoidContents.includes(content)) avoidContents.push(content);
+        }
+        console.warn(`Sinh câu AI lượt ${attempt}/${MAX_ATTEMPTS}: trùng kiến thức với ${dups.length} câu trong ngân hàng → sinh lại với khía cạnh khác.`);
+        continue;
+      }
+
+      return candidate;
     } catch (err) {
       lastError = err;
       console.warn(`Sinh 1 câu hỏi — lượt ${attempt} thất bại:`, (err as Error).message);
     }
   }
+
+  if (lastDupInfo && avoidContents.length > 0) {
+    throw new Error(`AI liên tục tạo câu trùng kiến thức với câu đã có trong ngân hàng (đã thử ${MAX_ATTEMPTS} lượt):\n${lastDupInfo}\nHãy thử lại hoặc thêm câu ở bài/dạng khác.`);
+  }
   throw new Error(`Không thể sinh câu hỏi qua AI: ${lastError ? lastError.message : 'lỗi không xác định'}`);
 }
 
-export async function generateAIQuestionsWithFailover(params: GenerateAIQuestionsParams, lessonId: string): Promise<Question[]> {
+export async function generateAIQuestionsWithFailover(params: GenerateAIQuestionsParams, lessonId: string, existingQuestions: Question[] = []): Promise<Question[]> {
   const config = getConfig();
   const apiKey = config.geminiKey || process.env.GEMINI_API_KEY;
   const userPrompt = buildUserPrompt(params);
 
   let rawOutput = '';
   let lastError: any = null;
+  let batch: Question[] = [];
 
   // Try Gemini first (up to 3 retries)
   if (apiKey) {
@@ -346,7 +377,7 @@ export async function generateAIQuestionsWithFailover(params: GenerateAIQuestion
       try {
         rawOutput = await callGemini(SYSTEM_PROMPT, userPrompt, apiKey, config.geminiModel || DEFAULT_GEMINI_MODEL);
         const parsed = validateAndCleanAIResponse(rawOutput);
-        return parsed.map((item, idx) => ({
+        batch = parsed.map((item, idx) => ({
           ...item,
           id: `ai_${Date.now()}_${idx + 1}`,
           grade: params.grade,
@@ -355,6 +386,7 @@ export async function generateAIQuestionsWithFailover(params: GenerateAIQuestion
           lessonId: lessonId,
           points: item.type === 'MCQ' ? 0.25 : item.type === 'TF' ? 1.0 : item.type === 'SA' ? 0.25 : 1.0
         }));
+        break;
       } catch (err) {
         lastError = err;
         console.warn(`Attempt ${attempt} with Gemini failed:`, (err as Error).message);
@@ -362,5 +394,44 @@ export async function generateAIQuestionsWithFailover(params: GenerateAIQuestion
     }
   }
 
-  throw new Error(`Không thể sinh câu hỏi qua AI: ${lastError ? lastError.message : "Chưa cấu hình API Key trong Cài đặt hoặc file môi trường."}`);
+  if (batch.length === 0) {
+    throw new Error(`Không thể sinh câu hỏi qua AI: ${lastError ? lastError.message : "Chưa cấu hình API Key trong Cài đặt hoặc file môi trường."}`);
+  }
+
+  // Hậu kiểm trùng kiến thức: câu trùng ngân hàng hoặc trùng nhau trong lô
+  // được SINH LẠI riêng (có danh sách nội dung phải tránh); sinh lại vẫn trùng thì bỏ câu đó.
+  const accepted: Question[] = [];
+  const reference = [...existingQuestions];
+  let regenerated = 0;
+  let dropped = 0;
+
+  for (const q of batch) {
+    const dups = findDuplicateQuestions(q, [...reference, ...accepted]);
+    if (dups.length === 0) {
+      accepted.push(q);
+      continue;
+    }
+    console.warn(`Câu sinh lô trùng kiến thức (${dups.length} câu) → sinh lại: ${q.q.slice(0, 80)}`);
+    try {
+      const replacement = await generateSingleAIQuestion({
+        grade: params.grade,
+        subject: params.subject,
+        lessonId,
+        lessonName: params.lessonName,
+        topicName: params.topicName,
+        lessonDescription: params.lessonDescription,
+        type: q.type,
+        level: q.level,
+        existingQuestions: [...reference, ...accepted]
+      });
+      accepted.push(replacement);
+      regenerated++;
+    } catch (err) {
+      dropped++;
+      console.warn('Sinh lại thất bại, bỏ qua câu trùng:', (err as Error).message);
+    }
+  }
+
+  console.log(`Sinh lô cho "${params.lessonName}": ${accepted.length} câu giữ lại, ${regenerated} sinh lại do trùng, ${dropped} bỏ do không sinh được nội dung mới.`);
+  return accepted;
 }

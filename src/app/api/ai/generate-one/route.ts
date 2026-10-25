@@ -54,7 +54,8 @@ export async function POST(request: Request) {
       lessonDescription: lesson.description,
       type,
       level,
-      samples
+      samples,
+      existingQuestions: all
     });
 
     addQuestion(question);

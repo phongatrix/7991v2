@@ -8,7 +8,7 @@ Web app cho giáo viên THPT: quản lý ngân hàng câu hỏi, dựng **ma tr�
 
 - **Cấu trúc chương trình chuẩn SGK** (trích đúng Mục lục): Tin học 10 (6 chủ đề/34 bài), Tin học 11 ICT (7 chủ đề/31 bài), Tin học 12 ICT (7 chủ đề/28 bài).
 - **Ngân hàng câu hỏi** 4 dạng (MCQ · Đúng/Sai 4 ý · Trả lời ngắn · Tự luận) × 4 mức độ (**Biết · Hiểu · Vận dụng · Vận dụng cao**), gắn mã năng lực NLa–NLe + mô tả YCCĐ.
-  - **Thêm Bằng AI**: sinh ngẫu nhiên 1 câu theo khối/chủ đề/bài/dạng/mức, tham khảo phong cách các câu mẫu trong kho, hiển thị ngay để **xem – sửa – lưu**; đồng thời hiển thị số lượng câu theo từng khối lớp.
+  - **Thêm Bằng AI**: sinh ngẫu nhiên 1 câu theo khối/chủ đề/bài/dạng/mức, tham khảo phong cách các câu mẫu trong kho, hiển thị ngay để **xem – sửa – lưu**; đồng thời hiển thị số lượng câu theo từng khối lớp. **Tự kiểm tra trùng kiến thức** với câu đã có trong ngân hàng (cùng bài): nếu trùng, AI sinh lại với khía cạnh khác (tối đa 4 lượt), hết lượt vẫn trùng thì báo lỗi kèm câu bị trùng.
   - **Chỉnh sửa/lưu/xóa** mọi câu có sẵn trong kho (nút ✏️ trên từng câu); **Import Word** (.docx).
 - **Ma trận 16 ô mức độ** (4 dạng × 4 mức) với mặc định theo khối:
   - Khối 10 & 11: **16 MCQ (4đ) + 3 Đúng/Sai (3đ) + 3 Tự luận (3đ)**

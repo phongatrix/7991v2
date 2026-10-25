@@ -51,6 +51,9 @@ export default function Home() {
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
 
+  // Đang tự sinh câu hỏi bổ sung cho ma trận (AI)
+  const [isEnsuringQuestions, setIsEnsuringQuestions] = useState(false);
+
   // Swap question state
   const [swapTarget, setSwapTarget] = useState<{ lessonId: string; lessonName: string } | null>(null);
 
@@ -100,8 +103,42 @@ export default function Home() {
     }
   };
 
+  // Đảm bảo ngân hàng đủ câu đúng dạng × mức × bài theo ma trận:
+  // thiếu thì gọi server tự sinh bằng AI và lưu vào ngân hàng câu hỏi.
+  const ensureQuestionsForMatrix = async (m: ExamMatrix): Promise<Question[]> => {
+    setIsEnsuringQuestions(true);
+    try {
+      const res = await fetch('/api/exam/ensure-questions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ matrix: m })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const generated: Question[] = data.questions || [];
+        if (generated.length > 0) {
+          setAvailableQuestions(prev => {
+            const ids = new Set(prev.map(q => q.id));
+            return [...generated.filter(q => !ids.has(q.id)), ...prev];
+          });
+        }
+        if (data.errors?.length) {
+          alert(`Đã sinh thêm ${generated.length} câu mới vào ngân hàng, nhưng có một số câu không sinh được:\n\n- ${data.errors.slice(0, 5).join('\n- ')}`);
+        }
+        return generated;
+      }
+      alert(data.error || 'Không thể kiểm tra/kịp thời sinh câu hỏi bổ sung.');
+    } catch (err) {
+      console.error(err);
+      alert('Lỗi kết nối khi sinh câu hỏi bổ sung: ' + (err as Error).message);
+    } finally {
+      setIsEnsuringQuestions(false);
+    }
+    return [];
+  };
+
   // Fast load sample mau.pdf
-  const handleLoadSampleMauPdf = () => {
+  const handleLoadSampleMauPdf = async () => {
     setGrade('11');
     setTitle('ĐỀ KIỂM TRA');
     setDurationMinutes(45);
@@ -123,9 +160,11 @@ export default function Home() {
     });
     setMatrix(m);
 
+    const generated = await ensureQuestionsForMatrix(m);
+    const pool = [...generated, ...availableQuestions]; // gộp câu vừa sinh vì state chưa kịp cập nhật
     const pkg = buildExamPackage({
       matrix: m,
-      availableQuestions,
+      availableQuestions: pool,
       department: 'SỞ GIÁO DỤC & ĐÀO TẠO ĐỒNG THÁP',
       school: 'TRƯỜNG THPT TRƯƠNG ĐỊNH',
       title: 'ĐỀ KIỂM TRA',
@@ -157,11 +196,12 @@ export default function Home() {
   };
 
   // Step 2 -> Step 3
-  const handleStep2Next = () => {
+  const handleStep2Next = async () => {
     if (!matrix) return;
+    const generated = await ensureQuestionsForMatrix(matrix);
     const pkg = buildExamPackage({
       matrix,
-      availableQuestions,
+      availableQuestions: [...generated, ...availableQuestions],
       department,
       school,
       title,
@@ -270,6 +310,7 @@ export default function Home() {
             setSelectedLessonIds={setSelectedLessonIds}
             onNext={handleStep2Next}
             onBack={() => goToStep(1)}
+            isNextBusy={isEnsuringQuestions}
           />
         )}
 

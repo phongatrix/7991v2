@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { generateAIQuestionsWithFailover } from '@/lib/aiService';
-import { addQuestion } from '@/lib/db';
+import { addQuestion, getQuestions } from '@/lib/db';
 
 export async function POST(request: Request) {
   try {
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
       tf_count, tf_b, tf_h, tf_vd,
       sa_b, sa_h, sa_vd,
       tl_b, tl_h, tl_vd
-    }, lessonId);
+    }, lessonId, getQuestions());
 
     if (autoSave) {
       for (const q of questions) {

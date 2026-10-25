@@ -15,14 +15,23 @@ export interface DistributeOptions {
   useSampleLayout?: boolean; // dùng bố cục cố định của mau.pdf (chỉ cho nút nạp đề mẫu)
 }
 
-// Mục tiêu tỉ lệ điểm theo mức độ (CV 7991): Biết 40% · Hiểu 30% · Vận dụng 20% · Vận dụng cao 10%
-// Đơn vị điểm: 1 unit = 0.25đ → thang 10đ = 40 units.
-const LEVEL_TARGET_UNITS: Record<Level, number> = {
-  biet: 16,      // 4.00đ
-  hieu: 12,      // 3.00đ
-  vandung: 8,    // 2.00đ
-  vandungcao: 4, // 1.00đ
-};
+// Tỉ lệ điểm theo mức độ (CV 7991): Biết 40% · Hiểu 30% · Vận dụng 20% · Vận dụng cao 10%
+// Đơn vị điểm: 1 unit = 0.25đ → thang 10đ chuẩn = 40 units (16/12/8/4).
+const CV_LEVEL_RATIOS = [0.4, 0.3, 0.2, 0.1];
+
+// Mục tiêu units theo từng mức cho tổng U units, làm tròn bằng phương pháp
+// số dư lớn nhất — với U = 40 (đề 10đ chuẩn) cho đúng 16/12/8/4 units.
+export function computeLevelTargets(totalUnits: number): Record<Level, number> {
+  const raw = LEVELS.map((lv, i) => ({ lv, exact: totalUnits * CV_LEVEL_RATIOS[i] }));
+  const out: Record<Level, number> = { biet: 0, hieu: 0, vandung: 0, vandungcao: 0 };
+  raw.forEach(({ lv, exact }) => { out[lv] = Math.floor(exact); });
+  let left = totalUnits - raw.reduce((s, r) => s + Math.floor(r.exact), 0);
+  const byRemainder = [...raw].sort((a, b) =>
+    (b.exact - Math.floor(b.exact)) - (a.exact - Math.floor(a.exact))
+  );
+  for (let i = 0; i < byRemainder.length && left > 0; i++, left--) out[byRemainder[i].lv] += 1;
+  return out;
+}
 
 export interface GradeTotals {
   totalMCQ: number;
@@ -71,6 +80,55 @@ function weightedPickIndex(weights: number[]): number {
     if (r <= 0) return i;
   }
   return weights.length - 1;
+}
+
+interface ChunkyAllocation {
+  tfPatterns: number[];  // chỉ số mẫu 4 ý cho từng câu Đúng-Sai
+  tlLevels: Level[];     // mức độ dồn điểm của từng câu Tự luận
+  remaining: Record<Level, number>; // units trần còn lại cho MCQ/SA
+}
+
+// Xếp các câu "khối" 4 units (Đúng-Sai theo mẫu 4 ý, Tự luận dồn 1 mức) bằng
+// quay lui ngẫu nhiên: mỗi bước chọn ngẫu nhiên một phương án hợp lệ (không làm
+// mức nào vượt trần units theo CV 7991), bế tắc thì lùi lại đổi phương án.
+// Hoàn chỉnh nên luôn tìm được nghiệm nếu tồn tại; xen kẽ TF/TL ngẫu nhiên
+// để mỗi lần bấm cho cấu trúc mức độ khác nhau.
+function allocateChunkyRandom(totalTF: number, totalTL: number, targets: Record<Level, number>): ChunkyAllocation | null {
+  const remaining: Record<Level, number> = { ...targets };
+  const tfPatterns: number[] = [];
+  const tlLevels: Level[] = [];
+  const items: ('tf' | 'tl')[] = shuffle([
+    ...Array.from({ length: totalTF }, () => 'tf' as const),
+    ...Array.from({ length: totalTL }, () => 'tl' as const),
+  ]);
+
+  const dfs = (idx: number): boolean => {
+    if (idx === items.length) return true;
+    if (items[idx] === 'tf') {
+      for (const pi of shuffle(TF_PATTERNS.map((_, i) => i))) {
+        const units = TF_PATTERNS[pi].units;
+        if (LEVELS.some((lv, li) => units[li] > remaining[lv])) continue;
+        LEVELS.forEach((lv, li) => { remaining[lv] -= units[li]; });
+        tfPatterns.push(pi);
+        if (dfs(idx + 1)) return true;
+        LEVELS.forEach((lv, li) => { remaining[lv] += units[li]; });
+        tfPatterns.pop();
+      }
+    } else {
+      for (const lv of shuffle(LEVELS)) {
+        if (remaining[lv] < 4) continue;
+        remaining[lv] -= 4;
+        tlLevels.push(lv);
+        if (dfs(idx + 1)) return true;
+        remaining[lv] += 4;
+        tlLevels.pop();
+      }
+    }
+    return false;
+  };
+
+  if (!dfs(0)) return null;
+  return { tfPatterns, tlLevels, remaining };
 }
 
 function emptyCells(): MatrixCell {
@@ -153,68 +211,51 @@ export function autoDistributeMatrix(options: DistributeOptions): ExamMatrix {
   }
 
   // =====================================================================
-  // THUẬT TOÁN DÀN CÂU CHUNG — mỗi lần bấm cho bố cục KHÁC NHAU
-  // nhưng tổng câu/ý theo từng (dạng × mức) luôn chốt đúng tỉ lệ quy định:
-  // điểm theo mức 40% B · 30% H · 20% VD · 10% VDC; điểm theo dạng theo input.
+  // THUẬT TOÁN DÀN CÂU CHUNG — mỗi lần bấm cho bố cục KHÁC NHAU nhưng tổng
+  // điểm theo từng mức luôn chốt đúng CV 7991: 40% B · 30% H · 20% VD · 10% VDC.
+  //
+  // Nguyên lý đảm bảo đúng tỉ lệ:
+  // 1) Đặt trần units theo từng mức từ tổng đơn vị của đề (theo CV 7991).
+  // 2) Câu "khối" 4 units (Đúng-Sai theo mẫu 4 ý, Tự luận dồn 1 mức) xếp trước
+  //    bằng quay lui ngẫu nhiên — không phương án nào vượt trần mức nào.
+  // 3) MCQ/SA (1 unit/câu) bốc ngẫu nhiên theo trọng số = trần còn thiếu của
+  //    từng mức → phát hết đúng số units, mọi mức về đúng 0 ⇒ khớp mục tiêu.
   // =====================================================================
 
-  // Bước 1: định mức (dạng × mức) theo đơn vị 0.25đ.
-  const remaining: Record<Level, number> = { ...LEVEL_TARGET_UNITS };
+  const totalUnits = totalMCQ + totalSA + 4 * totalTF + 4 * totalTL;
+  const targetUnits = computeLevelTargets(totalUnits);
 
-  // TF (mỗi câu 4 units): chọn mẫu làm lệch mục tiêu ít nhất
-  const tfQuota: Record<Level, number> = { biet: 0, hieu: 0, vandung: 0, vandungcao: 0 };
-  const tfPatternPerQuestion: number[] = [];
-  for (let i = 0; i < totalTF; i++) {
-    let best = 0;
-    let bestCost = Infinity;
-    for (const pIdx of shuffle(TF_PATTERNS.map((_, idx) => idx))) {
-      const units = TF_PATTERNS[pIdx].units;
-      let cost = 0;
-      LEVELS.forEach((lv, li) => {
-        const after = remaining[lv] - units[li];
-        cost += after >= 0 ? after * after : after * after * 4; // phạt nặng khi vượt mục tiêu
-      });
-      if (cost < bestCost) { bestCost = cost; best = pIdx; }
-    }
-    LEVELS.forEach((lv, li) => {
-      remaining[lv] = Math.max(0, remaining[lv] - TF_PATTERNS[best].units[li]);
-      tfQuota[lv] += TF_PATTERNS[best].units[li];
-    });
-    tfPatternPerQuestion.push(best);
+  const chunky = allocateChunkyRandom(totalTF, totalTL, targetUnits);
+  if (!chunky) {
+    throw new Error(
+      'Cấu hình số câu hiện tại không dàn được đúng tỉ lệ mức độ CV 7991 ' +
+      '(40% Biết · 30% Hiểu · 20% Vận dụng · 10% Vận dụng cao). ' +
+      'Vui lòng giảm số câu Đúng-Sai/Tự luận hoặc điều chỉnh lại số câu các dạng.'
+    );
   }
 
-  // TL (mỗi câu 4 units dồn vào 1 mức, ưu tiên mức chưa có câu TL nào) → MCQ (1 unit) → SA (1 unit)
-  const pickNeediestLevel = (): Level => {
-    let best = shuffle(LEVELS)[0];
-    for (const lv of LEVELS) if (remaining[lv] > remaining[best]) best = lv;
-    return best;
-  };
+  const tfQuota: Record<Level, number> = { biet: 0, hieu: 0, vandung: 0, vandungcao: 0 };
+  chunky.tfPatterns.forEach((pi) => {
+    TF_PATTERNS[pi].units.forEach((u, li) => { tfQuota[LEVELS[li]] += u; });
+  });
 
   const tlQuota: Record<Level, number> = { biet: 0, hieu: 0, vandung: 0, vandungcao: 0 };
-  for (let i = 0; i < totalTL; i++) {
-    const usable = LEVELS.filter(lv => remaining[lv] >= 1);
-    const unused = usable.filter(lv => tlQuota[lv] === 0);
-    let pool = unused.length > 0 ? unused : usable;
-    if (pool.length === 0) pool = shuffle(LEVELS);
-    let best = shuffle(pool)[0];
-    for (const lv of pool) if (remaining[lv] > remaining[best]) best = lv;
-    remaining[best] = Math.max(0, remaining[best] - 4);
-    tlQuota[best] += 1;
-  }
+  chunky.tlLevels.forEach((lv) => { tlQuota[lv] += 1; });
+
+  // MCQ/SA (1 unit/câu) lấp đúng phần trần còn lại của từng mức
+  const remaining: Record<Level, number> = { ...chunky.remaining };
+  const fillUnitQuota = (count: number, quota: Record<Level, number>) => {
+    for (let i = 0; i < count; i++) {
+      const lv = LEVELS[weightedPickIndex(LEVELS.map(l => Math.max(0, remaining[l])))];
+      remaining[lv] -= 1;
+      quota[lv] += 1;
+    }
+  };
 
   const mcqQuota: Record<Level, number> = { biet: 0, hieu: 0, vandung: 0, vandungcao: 0 };
-  for (let i = 0; i < totalMCQ; i++) {
-    const lv = pickNeediestLevel();
-    remaining[lv] = Math.max(0, remaining[lv] - 1);
-    mcqQuota[lv] += 1;
-  }
-
   const saQuota: Record<Level, number> = { biet: 0, hieu: 0, vandung: 0, vandungcao: 0 };
-  for (let i = 0; i < totalSA; i++) {
-    const lv = pickNeediestLevel();
-    remaining[lv] = Math.max(0, remaining[lv] - 1);
-    saQuota[lv] += 1;
-  }
+  fillUnitQuota(totalMCQ, mcqQuota);
+  fillUnitQuota(totalSA, saQuota);
 
   // Bước 2: rải ngẫu nhiên hạn mức sang các bài học.
   // Trọng số giảm theo số đơn vị cùng dạng mà bài đã nhận → cân bằng nhưng mỗi lần bấm khác nhau.
@@ -237,7 +278,7 @@ export function autoDistributeMatrix(options: DistributeOptions): ExamMatrix {
 
   // TF: gán trọn từng câu lớn (4 ý theo mẫu) vào một bài
   for (let i = 0; i < totalTF; i++) {
-    const pattern = TF_PATTERNS[tfPatternPerQuestion[i]];
+    const pattern = TF_PATTERNS[chunky.tfPatterns[i]];
     const weights = rows.map(r => 1 / (1 + Math.round(unitsOfType(r, 'tf') / 4)));
     const rowIdx = weightedPickIndex(weights);
     LEVELS.forEach((lv, li) => {

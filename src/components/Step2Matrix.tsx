@@ -14,6 +14,7 @@ interface Step2MatrixProps {
   setSelectedLessonIds: (ids: string[]) => void;
   onNext: () => void;
   onBack: () => void;
+  isNextBusy?: boolean;
 }
 
 export const Step2Matrix: React.FC<Step2MatrixProps> = ({
@@ -23,7 +24,8 @@ export const Step2Matrix: React.FC<Step2MatrixProps> = ({
   selectedLessonIds,
   setSelectedLessonIds,
   onNext,
-  onBack
+  onBack,
+  isNextBusy = false
 }) => {
   const topics = CURRICULUM_DATA[grade] || [];
 
@@ -74,18 +76,22 @@ export const Step2Matrix: React.FC<Step2MatrixProps> = ({
       alert("Vui lòng chọn ít nhất một bài học.");
       return;
     }
-    const newMatrix = autoDistributeMatrix({
-      grade,
-      subject: 'Tin học',
-      title: matrix?.title || `ĐỀ KIỂM TRA MÔN TIN HỌC LỚP ${grade}`,
-      durationMinutes: matrix?.durationMinutes || 45,
-      selectedLessonIds,
-      totalMCQ,
-      totalTF,
-      totalSA,
-      totalTL
-    });
-    setMatrix(newMatrix);
+    try {
+      const newMatrix = autoDistributeMatrix({
+        grade,
+        subject: 'Tin học',
+        title: matrix?.title || `ĐỀ KIỂM TRA MÔN TIN HỌC LỚP ${grade}`,
+        durationMinutes: matrix?.durationMinutes || 45,
+        selectedLessonIds,
+        totalMCQ,
+        totalTF,
+        totalSA,
+        totalTL
+      });
+      setMatrix(newMatrix);
+    } catch (e) {
+      alert((e as Error).message);
+    }
   };
 
   // Handle cell edit
@@ -130,15 +136,24 @@ export const Step2Matrix: React.FC<Step2MatrixProps> = ({
           </button>
           <button
             onClick={onNext}
-            disabled={!matrix || matrix.rows.length === 0}
+            disabled={!matrix || matrix.rows.length === 0 || isNextBusy}
             className={`inline-flex items-center px-5 py-2 text-sm font-bold text-white rounded-lg shadow-sm transition ${
-              !matrix || matrix.rows.length === 0
+              !matrix || matrix.rows.length === 0 || isNextBusy
                 ? 'bg-slate-400 cursor-not-allowed'
                 : 'bg-sky-600 hover:bg-sky-700'
             }`}
           >
-            <span>Tiếp Tục: Bản Đặc Tả</span>
-            <ArrowRight className="w-4 h-4 ml-1.5" />
+            {isNextBusy ? (
+              <>
+                <RefreshCw className="w-4 h-4 mr-1.5 animate-spin" />
+                <span>Đang sinh câu hỏi bổ sung…</span>
+              </>
+            ) : (
+              <>
+                <span>Tiếp Tục: Bản Đặc Tả</span>
+                <ArrowRight className="w-4 h-4 ml-1.5" />
+              </>
+            )}
           </button>
         </div>
       </div>
