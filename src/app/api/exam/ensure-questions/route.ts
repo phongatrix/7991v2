@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { planMatrixPicks } from '@/lib/examGenerator';
-import { getQuestions, addQuestion, getConfig } from '@/lib/db';
+import { getQuestions, getConfig } from '@/lib/db';
 import { generateSingleAIQuestion, GEMINI_DEADLINE_MSG } from '@/lib/aiService';
 import { CURRICULUM_DATA, Lesson, Topic } from '@/lib/curriculumData';
 import { ExamMatrix, Question } from '@/lib/types';
@@ -22,9 +22,11 @@ const DEFAULT_MAX_GENERATE = 5;
 
 /**
  * Đảm bảo ngân hàng đủ câu đúng dạng × mức × bài theo ma trận.
- * Thiếu bao nhiêu sinh bấy nhiêu bằng AI (lưu luôn vào ngân hàng câu hỏi).
- * extraQuestions: câu client đã sinh ở các đợt trước (serverless nhiều instance
- * có thể không thấy nhau qua /tmp) — gộp vào để tính thiếu và tránh trùng.
+ * Thiếu bao nhiêu sinh bấy nhiêu bằng AI. Các câu sinh ra KHÔNG tự ghi vào
+ * ngân hàng — client hiển thị pop-up xem lại, người dùng bấm
+ * "Thêm vào ngân hàng câu hỏi" để lưu (hoặc Sửa → Lưu từng câu).
+ * extraQuestions: câu client đã có (các đợt trước + toàn bộ kho phía client)
+ * — dùng để tính thiếu và tránh trùng mà không cần server lưu trước.
  */
 export async function POST(request: Request) {
   const startedAt = Date.now();
@@ -100,7 +102,7 @@ export async function POST(request: Request) {
             existingQuestions: bankNow,
             deadline
           });
-          addQuestion(q);
+          // Không tự lưu — chỉ trả về cho client xem lại rồi tự quyết định lưu
           bankNow.push(q);
           generated.push(q);
         } catch (e) {

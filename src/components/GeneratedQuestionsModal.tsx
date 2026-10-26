@@ -5,7 +5,7 @@ import { Question, LEVEL_LABELS } from '@/lib/types';
 import { CURRICULUM_DATA } from '@/lib/curriculumData';
 import { KatexRenderer } from './KatexRenderer';
 import { DraftEditor } from './DraftEditor';
-import { X, Sparkles, Pencil, Trash2, Loader2, AlertTriangle, CheckCircle2, XCircle, FileQuestion } from 'lucide-react';
+import { X, Sparkles, Pencil, Trash2, Loader2, AlertTriangle, CheckCircle2, XCircle, FileQuestion, Plus, Save } from 'lucide-react';
 
 interface GeneratedQuestionsModalProps {
   isOpen: boolean;
@@ -44,6 +44,9 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Các câu đã được lưu thẳng vào ngân hàng (bấm "Thêm vào ngân hàng" hoặc Sửa → Lưu)
+  const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+  const [savingAll, setSavingAll] = useState(false);
 
   // Đồng bộ danh sách mới nhất từ trang mỗi lần mở modal
   React.useEffect(() => {
@@ -51,6 +54,8 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
       setList(questions);
       setEditingId(null);
       setDraft(null);
+      setSavedIds(new Set());
+      setSavingAll(false);
     }
   }, [isOpen, questions]);
 
@@ -70,6 +75,66 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
     setDraft(d => (d ? { ...d, ...patch } : d));
   };
 
+  // Lưu 1 câu vào ngân hàng câu hỏi (POST /api/questions là upsert theo id nên
+  // lưu lại câu đã có cũng vô hại)
+  const saveToBank = async (q: Question): Promise<Question> => {
+    const res = await fetch('/api/questions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(q)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Lỗi khi lưu câu hỏi');
+    return (data.question || q) as Question;
+  };
+
+  const markSaved = (id: string) => {
+    setSavedIds(prev => new Set(prev).add(id));
+  };
+
+  const handleAddToBank = async (q: Question) => {
+    setBusyId(q.id);
+    try {
+      await saveToBank(q);
+      markSaved(q.id);
+      onChanged();
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // Lưu tất cả các câu chưa nằm trong ngân hàng (lần lượt từng câu để tránh
+  // ghi đè file kho khi chạy song song)
+  const unsavedCount = list.filter(q => !savedIds.has(q.id)).length;
+
+  const handleAddAllToBank = async () => {
+    if (unsavedCount === 0) return;
+    setSavingAll(true);
+    let saved = 0;
+    const failed: string[] = [];
+    for (const q of list) {
+      if (savedIds.has(q.id)) continue;
+      try {
+        await saveToBank(q);
+        saved += 1;
+      } catch {
+        failed.push(q.q.slice(0, 80) + '…');
+      }
+    }
+    setSavedIds(prev => {
+      const next = new Set(prev);
+      for (const q of list) next.add(q.id);
+      return next;
+    });
+    setSavingAll(false);
+    if (saved > 0) onChanged();
+    if (failed.length > 0) {
+      alert(`Đã lưu ${saved} câu. Không lưu được ${failed.length} câu:\n- ${failed.join('\n- ')}`);
+    }
+  };
+
   const handleSaveEdit = async () => {
     if (!draft) return;
     if (!draft.q || !draft.q.trim()) {
@@ -78,15 +143,9 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
     }
     setSaving(true);
     try {
-      const res = await fetch('/api/questions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(draft)
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Lỗi khi lưu câu hỏi');
-      const saved = (data.question || draft) as Question;
+      const saved = await saveToBank(draft);
       setList(prev => prev.map(q => (q.id === saved.id ? saved : q)));
+      markSaved(saved.id);
       setEditingId(null);
       setDraft(null);
       onChanged();
@@ -98,15 +157,18 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
   };
 
   const handleDelete = async (q: Question) => {
-    if (!confirm('Xóa câu hỏi này khỏi ngân hàng?\n\n' + q.q.slice(0, 120) + '…')) return;
+    if (!confirm('Xóa câu hỏi này khỏi danh sách?\n\n' + q.q.slice(0, 120) + '…')) return;
     setBusyId(q.id);
     setDeletingId(q.id);
     try {
-      const res = await fetch(`/api/questions?id=${encodeURIComponent(q.id)}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Lỗi khi xóa câu hỏi');
+      // Câu chưa lưu vào ngân hàng thì chỉ cần gỡ khỏi danh sách hiển thị
+      if (savedIds.has(q.id)) {
+        const res = await fetch(`/api/questions?id=${encodeURIComponent(q.id)}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Lỗi khi xóa câu hỏi');
+        onChanged();
+      }
       setList(prev => prev.filter(item => item.id !== q.id));
-      onChanged();
     } catch (err) {
       alert((err as Error).message);
     } finally {
@@ -123,11 +185,11 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
           <div>
             <h3 className="text-base font-bold text-slate-900 flex items-center">
               <Sparkles className="w-5 h-5 mr-2 text-purple-600" />
-              Câu hỏi AI vừa sinh vào ngân hàng
+              Câu hỏi AI vừa sinh bổ sung cho ma trận
             </h3>
             <p className="text-xs text-slate-600 mt-1">
               {list.length > 0 ? (
-                <>Đã sinh <b className="text-emerald-700">{list.length} câu mới</b>. Kiểm tra nội dung, bấm <b>Sửa</b> để chỉnh hoặc <b>Xóa</b> để loại khỏi ngân hàng.</>
+                <>Đã sinh <b className="text-emerald-700">{list.length} câu mới</b> (chưa lưu vào ngân hàng). Kiểm tra nội dung rồi bấm <b>Thêm vào ngân hàng</b> để lưu, <b>Sửa</b> để chỉnh hoặc <b>Xóa</b> để loại bỏ.</>
               ) : (
                 <>Không sinh được câu hỏi nào trong lượt này.</>
               )}
@@ -188,6 +250,29 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
                       </span>
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
+                      {savedIds.has(q.id) ? (
+                        <span
+                          className="inline-flex items-center px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 bg-emerald-50 rounded-lg"
+                          title="Câu này đã nằm trong ngân hàng câu hỏi"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
+                          Đã lưu
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => handleAddToBank(q)}
+                          disabled={busyId === q.id}
+                          className="inline-flex items-center px-2.5 py-1.5 text-[11px] font-bold text-sky-700 bg-sky-50 hover:bg-sky-100 disabled:bg-slate-100 disabled:text-slate-400 rounded-lg transition"
+                          title="Lưu câu hỏi này vào ngân hàng câu hỏi"
+                        >
+                          {busyId === q.id ? (
+                            <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                          ) : (
+                            <Plus className="w-3.5 h-3.5 mr-1" />
+                          )}
+                          Thêm vào ngân hàng
+                        </button>
+                      )}
                       <button
                         onClick={() => startEdit(q)}
                         className="inline-flex items-center px-2.5 py-1.5 text-[11px] font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 rounded-lg transition"
@@ -275,16 +360,33 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+        <div className="px-6 py-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3">
           <span className="text-[11px] text-slate-500">
-            Các thay đổi (sửa/xóa) được lưu thẳng vào ngân hàng câu hỏi.
+            {unsavedCount > 0
+              ? `Còn ${unsavedCount} câu chưa được lưu vào ngân hàng câu hỏi.`
+              : 'Tất cả câu hỏi đã nằm trong ngân hàng câu hỏi.'}
           </span>
-          <button
-            onClick={onClose}
-            className="px-5 py-2 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-lg shadow transition"
-          >
-            Đóng
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              onClick={handleAddAllToBank}
+              disabled={unsavedCount === 0 || savingAll}
+              className="inline-flex items-center px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:text-slate-500 text-white font-bold rounded-lg shadow transition"
+              title="Lưu tất cả câu hỏi chưa lưu vào ngân hàng câu hỏi"
+            >
+              {savingAll ? (
+                <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+              ) : (
+                <Save className="w-4 h-4 mr-1.5" />
+              )}
+              {savingAll ? 'Đang lưu...' : `Thêm vào ngân hàng câu hỏi (${unsavedCount})`}
+            </button>
+            <button
+              onClick={onClose}
+              className="px-5 py-2 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-lg shadow transition"
+            >
+              Đóng
+            </button>
+          </div>
         </div>
       </div>
     </div>
