@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { Question, Level, LEVELS, LEVEL_LABELS } from '@/lib/types';
-import { Sparkles, Check, Loader2 } from 'lucide-react';
+import { Sparkles, Check, X, Loader2 } from 'lucide-react';
 
 /* ===== Form soạn thảo dùng chung: câu AI vừa tạo & câu có sẵn trong kho ===== */
 export const DraftEditor: React.FC<{
@@ -12,7 +12,8 @@ export const DraftEditor: React.FC<{
   saving: boolean;
   title: string;
   saveLabel: string;
-}> = ({ draft, onChange, onSave, saving, title, saveLabel }) => {
+  onCancel?: () => void;
+}> = ({ draft, onChange, onSave, saving, title, saveLabel, onCancel }) => {
   const letters = ['A', 'B', 'C', 'D'];
   const subLetters = ['a', 'b', 'c', 'd'];
   return (
@@ -162,23 +163,35 @@ export const DraftEditor: React.FC<{
           </div>
         )}
 
-        <button
-          onClick={onSave}
-          disabled={saving}
-          className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-400 text-white font-bold rounded-lg shadow transition flex items-center justify-center space-x-2"
-        >
-          {saving ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span>Đang lưu...</span>
-            </>
-          ) : (
-            <>
-              <Check className="w-4 h-4" />
-              <span>{saveLabel}</span>
-            </>
+        <div className="flex gap-2">
+          <button
+            onClick={onSave}
+            disabled={saving}
+            className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-400 text-white font-bold rounded-lg shadow transition flex items-center justify-center space-x-2"
+          >
+            {saving ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Đang lưu...</span>
+              </>
+            ) : (
+              <>
+                <Check className="w-4 h-4" />
+                <span>{saveLabel}</span>
+              </>
+            )}
+          </button>
+          {onCancel && (
+            <button
+              onClick={onCancel}
+              disabled={saving}
+              className="py-2.5 px-4 bg-white hover:bg-slate-100 disabled:bg-slate-200 disabled:text-slate-400 text-slate-700 font-bold border border-slate-300 rounded-lg shadow-sm transition flex items-center justify-center space-x-2"
+            >
+              <X className="w-4 h-4" />
+              <span>Không lưu</span>
+            </button>
           )}
-        </button>
+        </div>
       </div>
     </div>
   );

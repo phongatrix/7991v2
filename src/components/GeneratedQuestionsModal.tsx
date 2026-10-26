@@ -326,6 +326,10 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
               saving={manualSaving}
               title={`Soạn thủ công — ${lessonNameOfGrade(manualDraft.lessonId)} (${TYPE_LABELS[manualDraft.type]} / ${LEVEL_LABELS[manualDraft.level]})`}
               saveLabel="Lưu Vào Ngân Hàng"
+              onCancel={() => {
+                setManualDraft(null);
+                setManualGapKey(null);
+              }}
             />
           </div>
         )}
