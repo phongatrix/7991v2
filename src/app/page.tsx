@@ -19,6 +19,7 @@ import { ImportWordModal } from '@/components/ImportWordModal';
 import { ConfigModal } from '@/components/ConfigModal';
 import { SwapQuestionModal } from '@/components/SwapQuestionModal';
 import { QuestionEditorModal } from '@/components/QuestionEditorModal';
+import { GeneratedQuestionsModal } from '@/components/GeneratedQuestionsModal';
 
 export default function Home() {
   const [currentStep, setCurrentStep] = useState(1);
@@ -54,6 +55,9 @@ export default function Home() {
   // Đang tự sinh câu hỏi bổ sung cho ma trận (AI)
   const [isEnsuringQuestions, setIsEnsuringQuestions] = useState(false);
   const [ensureLabel, setEnsureLabel] = useState('');
+
+  // Kết quả lượt sinh câu hỏi bổ sung — hiển thị dạng pop-up để xem/sửa/xóa
+  const [generatedResult, setGeneratedResult] = useState<{ questions: Question[]; errors: string[]; remaining: number } | null>(null);
 
   // Swap question state
   const [swapTarget, setSwapTarget] = useState<{ lessonId: string; lessonName: string } | null>(null);
@@ -156,7 +160,7 @@ export default function Home() {
         }
 
         if (!res.ok) {
-          alert(data.error || 'Không thể kiểm tra/kịp thời sinh câu hỏi bổ sung.');
+          allErrors.push(data.error || 'Không thể kiểm tra/kịp thời sinh câu hỏi bổ sung.');
           break;
         }
 
@@ -183,14 +187,10 @@ export default function Home() {
       }
 
       mergeGeneratedIntoBank();
-      if (allErrors.length) {
-        alert(`Đã sinh thêm ${allGenerated.length} câu mới vào ngân hàng, nhưng có một số câu không sinh được (còn thiếu ${lastRemaining} câu):\n\n- ${allErrors.slice(0, 5).join('\n- ')}`);
-      } else if (lastRemaining > 0 && allGenerated.length === 0) {
-        alert(
-          `Không sinh được câu nào cho ma trận này (còn thiếu ${lastRemaining} câu). ` +
-          'Vui lòng kiểm tra: (1) API key Gemini còn hạn mức không (bấm "Cấu hình API Key" → Test); ' +
-          '(2) nếu đang dùng Vercel, bật Fluid Compute trong Settings → Functions rồi redeploy.'
-        );
+      // Hiển thị kết quả bằng pop-up danh sách câu hỏi vừa sinh (xem/sửa/xóa)
+      // thay vì alert; chỉ bỏ qua khi không sinh được câu nào và cũng không có lỗi.
+      if (allGenerated.length > 0 || allErrors.length > 0) {
+        setGeneratedResult({ questions: allGenerated, errors: allErrors, remaining: lastRemaining });
       }
       return allGenerated;
     } catch (err) {
@@ -443,6 +443,18 @@ export default function Home() {
         isOpen={isEditorOpen}
         onClose={() => setIsEditorOpen(false)}
         onSaved={() => {
+          loadQuestions();
+        }}
+      />
+
+      {/* Pop-up kết quả sinh câu hỏi bổ sung: xem đầy đủ, sửa, xóa */}
+      <GeneratedQuestionsModal
+        isOpen={generatedResult !== null}
+        questions={generatedResult?.questions || []}
+        errors={generatedResult?.errors || []}
+        remaining={generatedResult?.remaining || 0}
+        onClose={() => setGeneratedResult(null)}
+        onChanged={() => {
           loadQuestions();
         }}
       />
