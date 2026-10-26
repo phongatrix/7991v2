@@ -20,3 +20,4 @@ data/exams.json
 *.pem
 .vercel
 *.zip
+.env*
