@@ -6,7 +6,7 @@ import type { MatrixGap } from '@/lib/examGenerator';
 import { CURRICULUM_DATA } from '@/lib/curriculumData';
 import { KatexRenderer } from './KatexRenderer';
 import { DraftEditor } from './DraftEditor';
-import { X, Sparkles, Pencil, Trash2, Loader2, AlertTriangle, CheckCircle2, XCircle, FileQuestion, Plus, Save, Wand2, PenLine } from 'lucide-react';
+import { X, Sparkles, Pencil, Trash2, Loader2, AlertTriangle, CheckCircle2, XCircle, FileQuestion, Plus, Save } from 'lucide-react';
 
 interface GeneratedQuestionsModalProps {
   isOpen: boolean;
@@ -60,6 +60,9 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
   const [manualDraft, setManualDraft] = useState<Question | null>(null); // câu đang soạn thủ công
   const [manualSaving, setManualSaving] = useState(false);
   const [manualGapKey, setManualGapKey] = useState<string | null>(null); // gap mà câu thủ công thuộc về
+  const [manualErrText, setManualErrText] = useState<string | null>(null); // dòng lỗi đang được tạo bù thủ công
+  // Danh sách lỗi hiển thị — rút gọn khi đã tạo bù câu cho lỗi tương ứng
+  const [errorList, setErrorList] = useState<string[]>(errors);
 
   // Đồng bộ danh sách mới nhất từ trang mỗi lần mở modal
   React.useEffect(() => {
@@ -73,6 +76,8 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
       setCreatingGap(null);
       setManualDraft(null);
       setManualGapKey(null);
+      setManualErrText(null);
+      setErrorList(errors);
     }
   }, [isOpen, questions]);
 
@@ -90,6 +95,23 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
 
   const gapKeyOf = (g: MatrixGap) => `${g.lessonId}|${g.type}|${g.level}`;
 
+  // Khớp 1 dòng lỗi ("Bài X. Tên bài — TL/biet: AI ... trùng ...") với tổ hợp
+  // còn thiếu tương ứng để gắn nút tạo bù đúng bài/dạng/mức của lỗi đó
+  const gapOfError = (err: string): MatrixGap | null => {
+    const m = err.match(/—\s*(MCQ|TF|SA|TL)\/([a-z]+):/);
+    if (!m) return null;
+    const type = m[1] as QuestionType;
+    const level = m[2] as Level;
+    const lessonName = err.split('—')[0].trim();
+    return (
+      gapList.find(g =>
+        g.type === type &&
+        g.level === level &&
+        (lessonNameOfGrade(g.lessonId) === lessonName || lessonName.includes(lessonNameOfGrade(g.lessonId)))
+      ) || null
+    );
+  };
+
   // Trừ 1 câu khỏi tổ hợp gap sau khi tạo bù thành công
   const consumeGap = (key: string) => {
     setGapList(prev => prev
@@ -97,11 +119,19 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
       .filter(g => g.missing > 0));
   };
 
+  // Thêm câu AI vừa sinh vào danh sách hiển thị (đã lưu ngân hàng ở route)
+  const addSavedQuestion = (q: Question, gapKey: string | null) => {
+    setList(prev => [q, ...prev]);
+    markSaved(q.id);
+    if (gapKey) consumeGap(gapKey);
+    onChanged();
+  };
+
   // Tạo bằng AI đúng tổ hợp bài×dạng×mức còn thiếu. Route /api/ai/generate-one
   // tự lưu vào ngân hàng sau khi vượt kiểm tra trùng kiến thức.
-  const handleAIGenerateForGap = async (gap: MatrixGap) => {
+  const handleAIGenerateForGap = async (gap: MatrixGap, errText?: string) => {
     const key = gapKeyOf(gap);
-    setCreatingGap(key);
+    setCreatingGap(errText ? errText : key);
     try {
       const res = await fetch('/api/ai/generate-one', {
         method: 'POST',
@@ -110,11 +140,8 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Lỗi khi gọi AI');
-      const q = data.question as Question;
-      setList(prev => [q, ...prev]);
-      markSaved(q.id);
-      consumeGap(key);
-      onChanged();
+      addSavedQuestion(data.question as Question, key);
+      if (errText) setErrorList(prev => prev.filter(e => e !== errText));
     } catch (err) {
       alert((err as Error).message);
     } finally {
@@ -123,8 +150,9 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
   };
 
   // Soạn thủ công đúng tổ hợp còn thiếu — mở khung soạn với khung câu trống
-  const startManualForGap = (gap: MatrixGap) => {
+  const startManualForGap = (gap: MatrixGap, errText?: string) => {
     setManualGapKey(gapKeyOf(gap));
+    setManualErrText(errText || null);
     setManualDraft({
       id: '',
       grade,
@@ -156,8 +184,10 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
       setList(prev => [saved, ...prev]);
       markSaved(saved.id);
       if (manualGapKey) consumeGap(manualGapKey);
+      if (manualErrText) setErrorList(prev => prev.filter(e => e !== manualErrText));
       setManualDraft(null);
       setManualGapKey(null);
+      setManualErrText(null);
       onChanged();
     } catch (err) {
       alert((err as Error).message);
@@ -303,15 +333,46 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
           </button>
         </div>
 
-        {/* Danh sách lỗi (nếu có) */}
-        {errors.length > 0 && (
+        {/* Danh sách lỗi (nếu có) — mỗi lỗi gắn nút tạo bù đúng bài/dạng/mức */}
+        {errorList.length > 0 && (
           <div className="mx-6 mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900">
             <div className="font-bold flex items-center mb-1">
               <AlertTriangle className="w-4 h-4 mr-1.5 text-amber-600" />
-              Một số câu không sinh được ({errors.length}):
+              Một số câu không sinh được ({errorList.length}):
             </div>
-            <ul className="list-disc list-inside space-y-0.5 max-h-28 overflow-y-auto">
-              {errors.slice(0, 8).map((e, i) => <li key={i}>{e}</li>)}
+            <ul className="space-y-2 max-h-40 overflow-y-auto">
+              {errorList.map((e, i) => {
+                const gap = gapOfError(e);
+                return (
+                  <li key={i} className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="flex-1 min-w-[200px]">• {e}</span>
+                    {gap && (
+                      <span className="flex items-center gap-1.5 flex-shrink-0">
+                        <button
+                          onClick={() => handleAIGenerateForGap(gap, e)}
+                          disabled={creatingGap === e || Boolean(manualDraft)}
+                          className="inline-flex items-center px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-300 text-white rounded-lg text-[11px] font-semibold shadow-xs transition"
+                          title="AI sinh 1 câu đúng bài/dạng/mức này (tự kiểm tra trùng và tự lưu vào ngân hàng)"
+                        >
+                          {creatingGap === e
+                            ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                            : <Sparkles className="w-3.5 h-3.5 mr-1" />}
+                          Thêm Bằng AI
+                        </button>
+                        <button
+                          onClick={() => startManualForGap(gap, e)}
+                          disabled={Boolean(manualDraft)}
+                          className="inline-flex items-center px-3 py-1.5 bg-sky-600 hover:bg-sky-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg text-[11px] font-semibold shadow-xs transition"
+                          title="Tự soạn câu đúng bài/dạng/mức này rồi lưu vào ngân hàng"
+                        >
+                          <Plus className="w-3.5 h-3.5 mr-1" />
+                          Thêm Thủ Công
+                        </button>
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           </div>
         )}
@@ -350,22 +411,22 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
                       <button
                         onClick={() => handleAIGenerateForGap(g)}
                         disabled={creatingGap === key || Boolean(manualDraft)}
-                        className="inline-flex items-center px-2.5 py-1 text-[11px] font-bold text-white bg-purple-600 hover:bg-purple-700 disabled:bg-slate-300 rounded-lg transition"
+                        className="inline-flex items-center px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-300 text-white rounded-lg text-[11px] font-semibold shadow-xs transition"
                         title="AI sinh 1 câu đúng bài/dạng/mức này (tự kiểm tra trùng và tự lưu vào ngân hàng)"
                       >
                         {creatingGap === key
                           ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
-                          : <Wand2 className="w-3.5 h-3.5 mr-1" />}
-                        Tạo bằng AI
+                          : <Sparkles className="w-3.5 h-3.5 mr-1" />}
+                        Thêm Bằng AI
                       </button>
                       <button
                         onClick={() => startManualForGap(g)}
                         disabled={Boolean(manualDraft)}
-                        className="inline-flex items-center px-2.5 py-1 text-[11px] font-bold text-sky-700 bg-white hover:bg-sky-100 disabled:bg-slate-200 disabled:text-slate-400 border border-sky-300 rounded-lg transition"
+                        className="inline-flex items-center px-3 py-1.5 bg-sky-600 hover:bg-sky-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg text-[11px] font-semibold shadow-xs transition"
                         title="Tự soạn câu đúng bài/dạng/mức này rồi lưu vào ngân hàng"
                       >
-                        <PenLine className="w-3.5 h-3.5 mr-1" />
-                        Tạo thủ công
+                        <Plus className="w-3.5 h-3.5 mr-1" />
+                        Thêm Thủ Công
                       </button>
                     </span>
                   </li>
@@ -377,7 +438,7 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
 
         {/* Danh sách câu hỏi */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {list.length === 0 && errors.length === 0 && (
+          {list.length === 0 && errorList.length === 0 && (
             <div className="text-center py-10 text-sm text-slate-500 flex flex-col items-center">
               <FileQuestion className="w-10 h-10 text-slate-300 mb-2" />
               Ma trận đã đủ câu hỏi — không cần sinh bổ sung.
