@@ -3,6 +3,7 @@ import { planMatrixPicks } from '@/lib/examGenerator';
 import { getQuestions, getConfig } from '@/lib/db';
 import { generateSingleAIQuestion, GEMINI_DEADLINE_MSG } from '@/lib/aiService';
 import { CURRICULUM_DATA, Lesson, Topic } from '@/lib/curriculumData';
+import { getSgkLessonText } from '@/lib/sgkContent';
 import { ExamMatrix, Question } from '@/lib/types';
 
 // Vercel Hobby cho phép tối đa 60s/function (Fluid Compute). Route này sinh câu
@@ -97,6 +98,7 @@ export async function POST(request: Request) {
             lessonName: info.lesson.fullName,
             topicName: info.topic.name,
             lessonDescription: info.lesson.description,
+            sgkContent: getSgkLessonText(matrix.grade, gap.lessonId),
             type: gap.type,
             level: gap.level,
             existingQuestions: bankNow,

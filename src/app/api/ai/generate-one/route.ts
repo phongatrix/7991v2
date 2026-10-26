@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { generateSingleAIQuestion } from '@/lib/aiService';
 import { addQuestion, getQuestions } from '@/lib/db';
 import { CURRICULUM_DATA } from '@/lib/curriculumData';
+import { getSgkLessonText } from '@/lib/sgkContent';
 import { Grade, QuestionType, Level, LEVELS } from '@/lib/types';
 
 const VALID_TYPES: QuestionType[] = ['MCQ', 'TF', 'SA', 'TL'];
@@ -59,6 +60,7 @@ export async function POST(request: Request) {
       lessonName: lesson.fullName,
       topicName: topic.name,
       lessonDescription: lesson.description,
+      sgkContent: getSgkLessonText(grade, lessonId),
       type,
       level,
       samples,

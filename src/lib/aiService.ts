@@ -254,6 +254,8 @@ export interface SingleQuestionParams {
   lessonName: string;
   topicName: string;
   lessonDescription?: string;
+  /** Nội dung bài học OCR từ SGK — bám sát sách khi soạn câu */
+  sgkContent?: string;
   type: QuestionType;
   level: Level;
   samples?: string;
@@ -269,6 +271,7 @@ export function buildSingleQuestionPrompt(params: SingleQuestionParams & { avoid
     lessonName,
     topicName,
     lessonDescription = '',
+    sgkContent = '',
     type,
     level,
     samples = '',
@@ -291,11 +294,24 @@ export function buildSingleQuestionPrompt(params: SingleQuestionParams & { avoid
     vandungcao: 'Vận dụng cao (Evaluate/Create) — tình huống mới phức tạp, đòi hỏi tổng hợp, đánh giá, sáng tạo giải pháp'
   };
 
+  // Tách danh sách Yêu cầu cần đạt (YCCD) của bài từ mô tả SGK — đây chính là
+  // căn cứ YCCD mà ma trận đã thiết lập, câu sinh ra phải bám đúng vào đây
+  const yccdList = lessonDescription
+    .replace(/^.*?Sau bài này em sẽ\s*:\s*/i, '')
+    .split(';')
+    .map(s => s.trim())
+    .filter(Boolean);
+
   return `Đóng vai giáo viên môn ${subject} lớp ${grade}. Hãy SOẠN NGẪU NHIÊN ĐÚNG 1 CÂU HỎI HOÀN TOÀN MỚI (nếu có câu mẫu, TUYỆT ĐỐI KHÔNG trùng lặp nội dung với câu mẫu).
 Bài học: "${lessonName}" thuộc chủ đề "${topicName}".
-Yêu cầu cần đạt của bài theo SGK: ${lessonDescription}
-KIẾN THỨC BẮT BUỘC BÁM SÁT SGK Tin học ${grade} — bộ sách "Kết nối tri thức với cuộc sống", định hướng Tin học ứng dụng (ICT). TUYỆT ĐỐI KHÔNG hỏi kiểu "theo SGK", "theo bài học".
-NGÔN NGỮ BẮT BUỘC THEO SÁCH GIÁO KHOA:
+YÊU CẦU CẦN ĐẠT CỦA BÀI THEO MA TRẬN (nguồn SGK) — câu hỏi BẮT BUỘC phải kiểm tra TRỰC TIẾP một yêu cầu trong danh sách này, không được ra ngoài phạm vi:
+${yccdList.map((s, i) => `${i + 1}. ${s}`).join('\n') || `- ${lessonDescription || 'Kiến thức cốt lõi của ' + lessonName}`}
+KIẾN THỨC BẮT BUỘC BÁM SÁT SGK Tin học ${grade} — bộ sách "Kết nối tri thức với cuộc sống", định hướng Tin học ứng dụng (ICT). Nội dung câu hỏi CHỈ được lấy từ các kiến thức/kỹ năng của bài học "${lessonName}" nêu trong yêu cầu cần đạt ở trên (kể cả thuật ngữ, ví dụ, tình huống trong SGK). TUYỆT ĐỐI KHÔNG hỏi kiểu "theo SGK", "theo bài học"; KHÔNG lan sang bài khác.
+${sgkContent ? `TRÍCH NỘI DUNG BÀI HỌC TỪ SÁCH GIÁO KHOA (nguồn chính thống duy nhất cho câu hỏi — thuật ngữ, khái niệm, ví dụ phải khớp với trích đoạn này):
+"""
+${sgkContent}
+"""
+` : ''}NGÔN NGỮ BẮT BUỘC THEO SÁCH GIÁO KHOA:
 - Dùng ĐÚNG thuật ngữ và cách diễn đạt như SGK KNTT-ICT (ưu tiên các cụm từ xuất hiện trong "Yêu cầu cần đạt của bài" ở trên).
 - CẤM từ lóng/từ viết tắt trên mạng ("code", "bug", "fix", "update"… khi sách có từ Việt tương ứng: "chương trình", "lỗi chương trình", "cập nhật"; "file" → "tệp tin", "chuột" không phải "mouse"…), cấm emoji, cấm từ nước ngoài khi SGK đã có thuật ngữ Việt.
 - KHÔNG gắn tên thương mại/website cụ thể khi SGK không nhắc đến; nếu cần ví dụ thực tế thì lấy tình huống học tập, gia đình, nhà trường gần gũi như trong sách.

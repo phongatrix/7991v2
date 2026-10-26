@@ -78,6 +78,11 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
 
   if (!isOpen) return null;
 
+  // Số câu còn thiếu theo ma trận — tính từ chính gapList đang hiển thị ở phần
+  // bên dưới để header và phần tạo bù LUÔN khớp nhau (tự giảm khi tạo bù thành công)
+  const gapTotal = gapList.reduce((s, g) => s + g.missing, 0);
+  const remainingTotal = gaps.length > 0 ? gapTotal : remaining;
+
   const lessonNameOf = (q: Question) =>
     (CURRICULUM_DATA[q.grade] || [])
       .flatMap(t => t.lessons)
@@ -293,8 +298,8 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
               ) : (
                 <>Không sinh được câu hỏi nào trong lượt này.</>
               )}
-              {remaining > 0 && (
-                <> · Còn thiếu <b className="text-amber-700">{remaining} câu</b> so với ma trận (bấm "Tiếp Tục" ở Bước 2 để sinh tiếp).</>
+              {remainingTotal > 0 && (
+                <> · Còn thiếu <b className="text-amber-700">{remainingTotal} câu</b> so với ma trận (bấm "Tiếp Tục" ở Bước 2 để sinh tiếp).</>
               )}
             </p>
           </div>
