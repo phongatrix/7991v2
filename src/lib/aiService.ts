@@ -262,7 +262,7 @@ export interface SingleQuestionParams {
   deadline?: number;
 }
 
-export function buildSingleQuestionPrompt(params: SingleQuestionParams & { avoidContents?: string[] }): string {
+export function buildSingleQuestionPrompt(params: SingleQuestionParams & { avoidContents?: string[]; angleHint?: string; dupFeedback?: string }): string {
   const {
     grade,
     subject = 'Tin học',
@@ -272,7 +272,9 @@ export function buildSingleQuestionPrompt(params: SingleQuestionParams & { avoid
     type,
     level,
     samples = '',
-    avoidContents = []
+    avoidContents = [],
+    angleHint,
+    dupFeedback
   } = params;
 
   const typeDesc: Record<QuestionType, string> = {
@@ -300,15 +302,29 @@ NGÔN NGỮ BẮT BUỘC THEO SÁCH GIÁO KHOA:
 - Văn phong trung thuần, chính xác như sách giáo khoa: câu câu chữ chữ, không phóng đại, không màu mè.
 DẠNG CÂU: ${typeDesc[type]}.
 MỨC ĐỘ NHẬN THỨC: "${level}" — ${levelDesc[level]}.
+${angleHint ? `GÓC KHAI THÁC BẮT BUỘC của lượt này (bắt buộc tuân theo): ${angleHint}. Chọn MỘT khía cạnh nội dung KHÁC của bài học so với các câu đã có.` : ''}
 MÃ NĂNG LỰC ("yccd"): chỉ chọn 1 mã PHÙ HỢP với nội dung trong bộ: NLa (sử dụng & quản lý CNTT-TT), NLb (ứng xử phù hợp môi trường số), NLc (học tập & tự học với CNTT-TT), NLd (giao tiếp & hợp tác), NLe (giải quyết vấn đề với CNTT-TT). "yccdContent" mô tả cụ thể yêu cầu của chính câu hỏi này, bắt đầu bằng động từ hành vi.
 ${samples ? `THAM KHẢO PHONG CÁCH một số câu mẫu đang có trong ngân hàng (chỉ học cách trình bày, KHÔNG sao chép nội dung):
 ${samples}
 ` : ''}${avoidContents.length ? `CÁC NỘI DUNG SAU ĐÃ CÓ TRONG NGÂN HÀNG CÂU HỎI — TUYỆT ĐỐI KHÔNG được lặp kiến thức, khái niệm, ví dụ, tình huống hay ý tưởng với bất kỳ nội dung nào bên dưới (phải khai thác MỘT KHÍA CẠNH KHÁC của bài học):
 ${avoidContents.slice(0, 15).map((s, i) => `${i + 1}. ${s.slice(0, 250)}`).join('\n')}
-` : ''}
+` : ''}${dupFeedback ? `LƯU Ý QUAN TRỌNG: lượt soạn trước đây của bạn đã bị hệ thống CHẶN vì ${dupFeedback}. Lần này phải thay đổi hoàn toàn: kiến thức khác, tình huống khác, cách hỏi khác.` : ''}
 CẤU TRÍCH: mảng JSON trả về có ĐÚNG 1 phần tử duy nhất.
 ${COMMON_RULES}`;
 }
+
+/** Các góc khai thác xen kẽ theo từng lượt thử — ép AI đổi tình huống/khía cạnh
+ * mỗi lần sinh lại để thoát trùng kiến thức với ngân hàng hiện có. */
+export const ANGLE_HINTS = [
+  'tình huống GIA ĐÌNH (phụ huynh, anh chị em sử dụng thiết bị, dịch vụ số trong sinh hoạt)',
+  'tình huống HỌC TẬP ở trường (làm bài tập nhóm, thuyết trình, tra cứu tài liệu học tập)',
+  'tình huống THAO TÁC THỰC HÀNH cụ thể trên phần mềm/thiết bị (liệt kê đúng các bước thực hiện)',
+  'tình huống BẢO VỆ THÔNG TIN CÁ NHÂN, an toàn trên môi trường số',
+  'tình huống SO SÁNH, LỰA CHỌN giữa hai công cụ/phương án và giải thích vì sao chọn phương án đó',
+  'tình huống XỬ LÝ SỰ CỐ/lỗi thường gặp khi sử dụng thiết bị, phần mềm, dịch vụ số',
+  'tình huống GIAO TIẾP, chia sẻ thông tin với bạn bè/thầy cô trên môi trường số',
+  'tình huống TỔ CHỨC, QUẢN LÝ thông tin/tệp/dữ liệu cá nhân khoa học'
+];
 
 /** Sinh đúng 1 câu hỏi mới (dùng cho nút "Thêm Bằng AI" trong Ngân Hàng Câu Hỏi).
  * Tự kiểm tra trùng kiến thức với ngân hàng (existingQuestions): nếu trùng thì
@@ -321,15 +337,23 @@ export async function generateSingleAIQuestion(params: SingleQuestionParams): Pr
   }
 
   const existing = params.existingQuestions || [];
-  const avoidContents: string[] = [];
+  const MAX_ATTEMPTS = 5;
+  // Pre-seed: đưa sẵn các câu cùng bài trong ngân hàng vào danh sách phải tránh
+  // ngay từ lượt đầu, thay vì đợi sinh trùng mới biết.
+  const avoidContents: string[] = existing
+    .filter(q => q.lessonId === params.lessonId)
+    .slice(0, 12)
+    .map(q => q.q);
   let lastError: any = null;
   let lastDupInfo = '';
-  const MAX_ATTEMPTS = 4;
+  let dupFeedback = '';
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (params.deadline && Date.now() >= params.deadline - 1_000) break; // hết giờ đợt này
     try {
-      const userPrompt = buildSingleQuestionPrompt({ ...params, avoidContents });
+      // Mỗi lượt ép AI khai thác một góc/tình huống khác nhau của bài học
+      const angleHint = ANGLE_HINTS[(attempt - 1) % ANGLE_HINTS.length];
+      const userPrompt = buildSingleQuestionPrompt({ ...params, avoidContents, angleHint, dupFeedback });
       const raw = await callGemini(SYSTEM_PROMPT, userPrompt, apiKey, config.geminiModel || DEFAULT_GEMINI_MODEL, { deadline: params.deadline });
       const parsed = validateAndCleanAIResponse(raw);
       const item = parsed[0];
@@ -370,6 +394,7 @@ export async function generateSingleAIQuestion(params: SingleQuestionParams): Pr
           const content = d.question.q;
           if (!avoidContents.includes(content)) avoidContents.push(content);
         }
+        dupFeedback = `trùng kiến thức/tình huống với câu đã có (tương tự ${Math.round(dups[0].score * 100)}%: "${dups[0].question.q.slice(0, 80)}")`;
         console.warn(`Sinh câu AI lượt ${attempt}/${MAX_ATTEMPTS}: trùng kiến thức với ${dups.length} câu trong ngân hàng → sinh lại với khía cạnh khác.`);
         continue;
       }

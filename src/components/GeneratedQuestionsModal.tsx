@@ -1,11 +1,12 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Question, LEVEL_LABELS } from '@/lib/types';
+import { Question, Grade, QuestionType, Level, LEVEL_LABELS } from '@/lib/types';
+import type { MatrixGap } from '@/lib/examGenerator';
 import { CURRICULUM_DATA } from '@/lib/curriculumData';
 import { KatexRenderer } from './KatexRenderer';
 import { DraftEditor } from './DraftEditor';
-import { X, Sparkles, Pencil, Trash2, Loader2, AlertTriangle, CheckCircle2, XCircle, FileQuestion, Plus, Save } from 'lucide-react';
+import { X, Sparkles, Pencil, Trash2, Loader2, AlertTriangle, CheckCircle2, XCircle, FileQuestion, Plus, Save, Wand2, PenLine } from 'lucide-react';
 
 interface GeneratedQuestionsModalProps {
   isOpen: boolean;
@@ -15,8 +16,12 @@ interface GeneratedQuestionsModalProps {
   errors: string[];
   /** Số câu còn thiếu so với ma trận (chưa sinh xong) */
   remaining: number;
+  /** Các tổ hợp bài×dạng×mức vẫn còn thiếu theo ma trận — cho phép tạo bù từng câu */
+  gaps: MatrixGap[];
+  /** Khối lớp của ma trận (để tạo câu thủ công đúng khối) */
+  grade: Grade;
   onClose: () => void;
-  /** Gọi khi câu hỏi được sửa/xóa thành công để trang chính làm mới dữ liệu */
+  /** Gọi khi câu hỏi được sửa/xóa/thêm thành công để trang chính làm mới dữ liệu */
   onChanged: () => void;
 }
 
@@ -35,6 +40,8 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
   questions,
   errors,
   remaining,
+  gaps,
+  grade,
   onClose,
   onChanged
 }) => {
@@ -47,6 +54,12 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
   // Các câu đã được lưu thẳng vào ngân hàng (bấm "Thêm vào ngân hàng" hoặc Sửa → Lưu)
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [savingAll, setSavingAll] = useState(false);
+  // Các tổ hợp còn thiếu theo ma trận — tạo bù từng câu ngay trong pop-up
+  const [gapList, setGapList] = useState<MatrixGap[]>(gaps);
+  const [creatingGap, setCreatingGap] = useState<string | null>(null); // key gap đang tạo bằng AI
+  const [manualDraft, setManualDraft] = useState<Question | null>(null); // câu đang soạn thủ công
+  const [manualSaving, setManualSaving] = useState(false);
+  const [manualGapKey, setManualGapKey] = useState<string | null>(null); // gap mà câu thủ công thuộc về
 
   // Đồng bộ danh sách mới nhất từ trang mỗi lần mở modal
   React.useEffect(() => {
@@ -56,6 +69,10 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
       setDraft(null);
       setSavedIds(new Set());
       setSavingAll(false);
+      setGapList(gaps);
+      setCreatingGap(null);
+      setManualDraft(null);
+      setManualGapKey(null);
     }
   }, [isOpen, questions]);
 
@@ -65,6 +82,89 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
     (CURRICULUM_DATA[q.grade] || [])
       .flatMap(t => t.lessons)
       .find(l => l.id === q.lessonId)?.fullName || q.lessonId;
+
+  const lessonNameOfGrade = (lessonId: string) =>
+    (CURRICULUM_DATA[grade] || [])
+      .flatMap(t => t.lessons)
+      .find(l => l.id === lessonId)?.fullName || lessonId;
+
+  const gapKeyOf = (g: MatrixGap) => `${g.lessonId}|${g.type}|${g.level}`;
+
+  // Trừ 1 câu khỏi tổ hợp gap sau khi tạo bù thành công
+  const consumeGap = (key: string) => {
+    setGapList(prev => prev
+      .map(g => (gapKeyOf(g) === key ? { ...g, missing: g.missing - 1 } : g))
+      .filter(g => g.missing > 0));
+  };
+
+  // Tạo bằng AI đúng tổ hợp bài×dạng×mức còn thiếu. Route /api/ai/generate-one
+  // tự lưu vào ngân hàng sau khi vượt kiểm tra trùng kiến thức.
+  const handleAIGenerateForGap = async (gap: MatrixGap) => {
+    const key = gapKeyOf(gap);
+    setCreatingGap(key);
+    try {
+      const res = await fetch('/api/ai/generate-one', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ grade, lessonId: gap.lessonId, type: gap.type, level: gap.level })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Lỗi khi gọi AI');
+      const q = data.question as Question;
+      setList(prev => [q, ...prev]);
+      markSaved(q.id);
+      consumeGap(key);
+      onChanged();
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setCreatingGap(null);
+    }
+  };
+
+  // Soạn thủ công đúng tổ hợp còn thiếu — mở khung soạn với khung câu trống
+  const startManualForGap = (gap: MatrixGap) => {
+    setManualGapKey(gapKeyOf(gap));
+    setManualDraft({
+      id: '',
+      grade,
+      subject: 'Tin học',
+      topicId: '',
+      lessonId: gap.lessonId,
+      type: gap.type,
+      level: gap.level,
+      yccd: 'NLa',
+      yccdContent: '',
+      q: '',
+      points: gap.type === 'MCQ' ? 0.25 : gap.type === 'TF' ? 1.0 : gap.type === 'SA' ? 0.25 : 1.0
+    });
+  };
+
+  const updateManualDraft = (patch: Partial<Question>) => {
+    setManualDraft(d => (d ? { ...d, ...patch } : d));
+  };
+
+  const handleSaveManual = async () => {
+    if (!manualDraft) return;
+    if (!manualDraft.q || !manualDraft.q.trim()) {
+      alert('Nội dung câu hỏi không được để trống.');
+      return;
+    }
+    setManualSaving(true);
+    try {
+      const saved = await saveToBank(manualDraft);
+      setList(prev => [saved, ...prev]);
+      markSaved(saved.id);
+      if (manualGapKey) consumeGap(manualGapKey);
+      setManualDraft(null);
+      setManualGapKey(null);
+      onChanged();
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setManualSaving(false);
+    }
+  };
 
   const startEdit = (q: Question) => {
     setEditingId(q.id);
@@ -212,6 +312,65 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
             </div>
             <ul className="list-disc list-inside space-y-0.5 max-h-28 overflow-y-auto">
               {errors.slice(0, 8).map((e, i) => <li key={i}>{e}</li>)}
+            </ul>
+          </div>
+        )}
+
+        {/* Khung soạn thủ công đúng tổ hợp còn thiếu */}
+        {manualDraft && (
+          <div className="mx-6 mt-4">
+            <DraftEditor
+              draft={manualDraft}
+              onChange={updateManualDraft}
+              onSave={handleSaveManual}
+              saving={manualSaving}
+              title={`Soạn thủ công — ${lessonNameOfGrade(manualDraft.lessonId)} (${TYPE_LABELS[manualDraft.type]} / ${LEVEL_LABELS[manualDraft.level]})`}
+              saveLabel="Lưu Vào Ngân Hàng"
+            />
+          </div>
+        )}
+
+        {/* Các tổ hợp còn thiếu theo ma trận — tạo bù từng câu */}
+        {gapList.length > 0 && (
+          <div className="mx-6 mt-4 p-3 bg-sky-50 border border-sky-200 rounded-lg text-xs text-sky-900">
+            <div className="font-bold flex items-center mb-2">
+              <FileQuestion className="w-4 h-4 mr-1.5 text-sky-600" />
+              Còn thiếu {gapList.reduce((s, g) => s + g.missing, 0)} câu theo ma trận — tạo bù từng câu ngay tại đây:
+            </div>
+            <ul className="space-y-1.5">
+              {gapList.map(g => {
+                const key = gapKeyOf(g);
+                return (
+                  <li key={key} className="flex items-center justify-between gap-2 flex-wrap">
+                    <span>
+                      <b>{lessonNameOfGrade(g.lessonId)}</b>
+                      {' — '}{TYPE_LABELS[g.type] || g.type}/{LEVEL_LABELS[g.level]} — còn <b>{g.missing}</b> câu
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => handleAIGenerateForGap(g)}
+                        disabled={creatingGap === key || Boolean(manualDraft)}
+                        className="inline-flex items-center px-2.5 py-1 text-[11px] font-bold text-white bg-purple-600 hover:bg-purple-700 disabled:bg-slate-300 rounded-lg transition"
+                        title="AI sinh 1 câu đúng bài/dạng/mức này (tự kiểm tra trùng và tự lưu vào ngân hàng)"
+                      >
+                        {creatingGap === key
+                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                          : <Wand2 className="w-3.5 h-3.5 mr-1" />}
+                        Tạo bằng AI
+                      </button>
+                      <button
+                        onClick={() => startManualForGap(g)}
+                        disabled={Boolean(manualDraft)}
+                        className="inline-flex items-center px-2.5 py-1 text-[11px] font-bold text-sky-700 bg-white hover:bg-sky-100 disabled:bg-slate-200 disabled:text-slate-400 border border-sky-300 rounded-lg transition"
+                        title="Tự soạn câu đúng bài/dạng/mức này rồi lưu vào ngân hàng"
+                      >
+                        <PenLine className="w-3.5 h-3.5 mr-1" />
+                        Tạo thủ công
+                      </button>
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         )}

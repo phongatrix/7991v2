@@ -111,10 +111,17 @@ export async function POST(request: Request) {
             break outer; // hết giờ đợt này (bình thường với cơ chế chia đợt) — không tính là lỗi
           }
           errors.push(`${info.lesson.fullName} — ${gap.type}/${gap.level}: ${msg}`);
+          // Trùng kiến thức: thử tiếp câu khác trong cùng gap (mỗi lượt đã được
+          // ép đổi góc khai thác). Lỗi khác (key sai, thiếu dữ liệu…) mới bỏ gap.
+          if (msg.includes('trùng kiến thức')) continue;
           break; // bỏ qua gap này, tránh treo cả lượt sinh
         }
       }
     }
+
+    // Tính lại các tổ hợp còn thiếu SAU khi sinh để client hiển thị danh sách
+    // gap thực tế còn lại (kèm nút tạo từng câu bù vào đúng chỗ thiếu)
+    const { gaps: remainingGaps } = planMatrixPicks(matrix, [...merged, ...generated]);
 
     return NextResponse.json({
       generated: generated.length,
@@ -122,7 +129,7 @@ export async function POST(request: Request) {
       errors,
       remaining: Math.max(0, totalMissing - generated.length),
       totalMissing,
-      gaps
+      gaps: remainingGaps
     });
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });

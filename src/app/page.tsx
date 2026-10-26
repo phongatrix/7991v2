@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Grade, ExamMatrix, ExamSpec, FullExamPackage, Question } from '@/lib/types';
+import { MatrixGap } from '@/lib/examGenerator';
 import { CURRICULUM_DATA } from '@/lib/curriculumData';
 import { autoDistributeMatrix, gradeDefaultTotals } from '@/lib/matrixDistributor';
 import { generateSpec } from '@/lib/specGenerator';
@@ -56,8 +57,9 @@ export default function Home() {
   const [isEnsuringQuestions, setIsEnsuringQuestions] = useState(false);
   const [ensureLabel, setEnsureLabel] = useState('');
 
-  // Kết quả lượt sinh câu hỏi bổ sung — hiển thị dạng pop-up để xem/sửa/xóa
-  const [generatedResult, setGeneratedResult] = useState<{ questions: Question[]; errors: string[]; remaining: number } | null>(null);
+  // Kết quả lượt sinh câu hỏi bổ sung — hiển thị dạng pop-up để xem/sửa/xóa;
+  // gaps là các tổ hợp bài×dạng×mức vẫn còn thiếu để tạo bù từng câu trong pop-up.
+  const [generatedResult, setGeneratedResult] = useState<{ questions: Question[]; errors: string[]; remaining: number; gaps: MatrixGap[]; grade: Grade } | null>(null);
 
   // Swap question state
   const [swapTarget, setSwapTarget] = useState<{ lessonId: string; lessonName: string } | null>(null);
@@ -122,6 +124,7 @@ export default function Home() {
     let stallRounds = 0;
     let chunkSize = 5; // số câu mỗi request — tự hạ khi server bị ngắt giữa chừng
     let lastRemaining = 0;
+    let lastGaps: MatrixGap[] = [];
 
     const mergeGeneratedIntoBank = () => {
       if (allGenerated.length === 0) return;
@@ -174,6 +177,7 @@ export default function Home() {
         allErrors.push(...(data.errors || []));
         const remaining: number = data.remaining ?? 0;
         lastRemaining = remaining;
+        lastGaps = Array.isArray(data.gaps) ? data.gaps : [];
         if (remaining <= 0) break;
 
         setEnsureLabel(`Đang sinh câu hỏi bổ sung… ${allGenerated.length}/${allGenerated.length + remaining} câu`);
@@ -190,7 +194,13 @@ export default function Home() {
       // Hiển thị kết quả bằng pop-up danh sách câu hỏi vừa sinh (xem/sửa/xóa)
       // thay vì alert; chỉ bỏ qua khi không sinh được câu nào và cũng không có lỗi.
       if (allGenerated.length > 0 || allErrors.length > 0) {
-        setGeneratedResult({ questions: allGenerated, errors: allErrors, remaining: lastRemaining });
+        setGeneratedResult({
+          questions: allGenerated,
+          errors: allErrors,
+          remaining: lastRemaining,
+          gaps: lastGaps,
+          grade: m.grade
+        });
       }
       return allGenerated;
     } catch (err) {
@@ -453,6 +463,8 @@ export default function Home() {
         questions={generatedResult?.questions || []}
         errors={generatedResult?.errors || []}
         remaining={generatedResult?.remaining || 0}
+        gaps={generatedResult?.gaps || []}
+        grade={generatedResult?.grade || '11'}
         onClose={() => setGeneratedResult(null)}
         onChanged={() => {
           loadQuestions();
