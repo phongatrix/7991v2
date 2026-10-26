@@ -96,25 +96,20 @@ export const GeneratedQuestionsModal: React.FC<GeneratedQuestionsModalProps> = (
   const gapKeyOf = (g: MatrixGap) => `${g.lessonId}|${g.type}|${g.level}`;
 
   // Khớp 1 dòng lỗi ("Bài X. Tên bài — TL/biet: AI ... trùng ...") với tổ hợp
-  // còn thiếu tương ứng để gắn nút tạo bù đúng bài/dạng/mức của lỗi đó. Nếu
-  // không còn gap nào khớp (ma trận đã được tính là đủ nhờ câu khác bù vào)
-  // vẫn tự dựng gap từ nội dung dòng lỗi để nút luôn hiển thị.
+  // còn thiếu tương ứng để gắn nút tạo bù đúng bài/dạng/mức của lỗi đó
   const gapOfError = (err: string): MatrixGap | null => {
     const m = err.match(/—\s*(MCQ|TF|SA|TL)\/([a-z]+):/);
     if (!m) return null;
     const type = m[1] as QuestionType;
     const level = m[2] as Level;
     const lessonName = err.split('—')[0].trim();
-    const matched = gapList.find(g =>
-      g.type === type &&
-      g.level === level &&
-      (lessonNameOfGrade(g.lessonId) === lessonName || lessonName.includes(lessonNameOfGrade(g.lessonId)))
+    return (
+      gapList.find(g =>
+        g.type === type &&
+        g.level === level &&
+        (lessonNameOfGrade(g.lessonId) === lessonName || lessonName.includes(lessonNameOfGrade(g.lessonId)))
+      ) || null
     );
-    if (matched) return matched;
-    // Tìm lại bài học theo tên trong chương trình SGK của khối lớp
-    const allLessons = (CURRICULUM_DATA[grade] || []).flatMap(t => t.lessons);
-    const lesson = allLessons.find(l => l.fullName === lessonName || lessonName.includes(l.fullName));
-    return lesson ? { lessonId: lesson.id, type, level, missing: 1 } : null;
   };
 
   // Trừ 1 câu khỏi tổ hợp gap sau khi tạo bù thành công
