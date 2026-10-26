@@ -6,6 +6,10 @@ import { Grade, QuestionType, Level, LEVELS } from '@/lib/types';
 
 const VALID_TYPES: QuestionType[] = ['MCQ', 'TF', 'SA', 'TL'];
 
+// Sinh 1 câu có thể mất >10s (nhiều lượt thử lại) — xin ngưỡng thời gian tối đa
+// của serverless (Vercel Hobby: 60s với Fluid Compute).
+export const maxDuration = 60;
+
 /**
  * Sinh NGẪU NHIÊN đúng 1 câu hỏi mới theo khối lớp/bài học/dạng/mức độ đã chọn,
  * tham khảo phong cách các câu mẫu cùng loại trong kho, rồi tự lưu vào ngân hàng.

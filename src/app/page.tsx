@@ -53,6 +53,7 @@ export default function Home() {
 
   // Đang tự sinh câu hỏi bổ sung cho ma trận (AI)
   const [isEnsuringQuestions, setIsEnsuringQuestions] = useState(false);
+  const [ensureLabel, setEnsureLabel] = useState('');
 
   // Swap question state
   const [swapTarget, setSwapTarget] = useState<{ lessonId: string; lessonName: string } | null>(null);
@@ -105,36 +106,88 @@ export default function Home() {
 
   // Đảm bảo ngân hàng đủ câu đúng dạng × mức × bài theo ma trận:
   // thiếu thì gọi server tự sinh bằng AI và lưu vào ngân hàng câu hỏi.
+  // Serverless (Vercel) giới hạn thời gian mỗi request, nên client sinh theo
+  // TỪNG ĐỢT NHỎ và lặp lại tới khi đủ số câu còn thiếu.
   const ensureQuestionsForMatrix = async (m: ExamMatrix): Promise<Question[]> => {
     setIsEnsuringQuestions(true);
-    try {
-      const res = await fetch('/api/exam/ensure-questions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ matrix: m })
+    setEnsureLabel('Đang kiểm tra ngân hàng câu hỏi…');
+    const allGenerated: Question[] = [];
+    const generatedIds = new Set<string>();
+    const allErrors: string[] = [];
+    let platformFails = 0;
+    let stallRounds = 0;
+
+    const mergeGeneratedIntoBank = () => {
+      if (allGenerated.length === 0) return;
+      setAvailableQuestions(prev => {
+        const ids = new Set(prev.map(q => q.id));
+        return [...allGenerated.filter(q => !ids.has(q.id)), ...prev];
       });
-      const data = await res.json();
-      if (res.ok) {
-        const generated: Question[] = data.questions || [];
-        if (generated.length > 0) {
-          setAvailableQuestions(prev => {
-            const ids = new Set(prev.map(q => q.id));
-            return [...generated.filter(q => !ids.has(q.id)), ...prev];
-          });
+    };
+
+    try {
+      for (let round = 0; round < 60; round++) {
+        const res = await fetch('/api/exam/ensure-questions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ matrix: m, maxGenerate: 5, extraQuestions: allGenerated })
+        });
+        const text = await res.text();
+        let data: any;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          // Máy chủ trả trang lỗi của platform (function bị kill do quá giới hạn
+          // thời gian/quá tải) thay vì JSON — thử lại đợt này rồi mới bỏ cuộc.
+          platformFails += 1;
+          if (platformFails >= 3) {
+            throw new Error(`Máy chủ liên tục ngắt kết nối khi sinh câu hỏi (giới hạn thời gian/quá tải của Vercel). Đã sinh được ${allGenerated.length} câu — vui lòng thử lại tiếp.`);
+          }
+          await new Promise(r => setTimeout(r, 2500));
+          round -= 1; // thử lại đợt vừa rồi
+          continue;
         }
-        if (data.errors?.length) {
-          alert(`Đã sinh thêm ${generated.length} câu mới vào ngân hàng, nhưng có một số câu không sinh được:\n\n- ${data.errors.slice(0, 5).join('\n- ')}`);
+
+        if (!res.ok) {
+          alert(data.error || 'Không thể kiểm tra/kịp thời sinh câu hỏi bổ sung.');
+          break;
         }
-        return generated;
+
+        platformFails = 0;
+        for (const q of data.questions || []) {
+          if (q && q.id && !generatedIds.has(q.id)) {
+            generatedIds.add(q.id);
+            allGenerated.push(q);
+          }
+        }
+        allErrors.push(...(data.errors || []));
+        const remaining: number = data.remaining ?? 0;
+        if (remaining <= 0) break;
+
+        setEnsureLabel(`Đang sinh câu hỏi bổ sung… ${allGenerated.length}/${allGenerated.length + remaining} câu`);
+
+        if ((data.generated || 0) === 0) {
+          stallRounds += 1;
+          if (stallRounds >= 2) break; // server không còn sinh được thêm — thoát tránh lặp vô hạn
+        } else {
+          stallRounds = 0;
+        }
       }
-      alert(data.error || 'Không thể kiểm tra/kịp thời sinh câu hỏi bổ sung.');
+
+      mergeGeneratedIntoBank();
+      if (allErrors.length) {
+        alert(`Đã sinh thêm ${allGenerated.length} câu mới vào ngân hàng, nhưng có một số câu không sinh được:\n\n- ${allErrors.slice(0, 5).join('\n- ')}`);
+      }
+      return allGenerated;
     } catch (err) {
       console.error(err);
       alert('Lỗi kết nối khi sinh câu hỏi bổ sung: ' + (err as Error).message);
+      mergeGeneratedIntoBank();
+      return allGenerated;
     } finally {
       setIsEnsuringQuestions(false);
+      setEnsureLabel('');
     }
-    return [];
   };
 
   // Fast load sample mau.pdf
@@ -311,6 +364,7 @@ export default function Home() {
             onNext={handleStep2Next}
             onBack={() => goToStep(1)}
             isNextBusy={isEnsuringQuestions}
+            busyLabel={ensureLabel}
           />
         )}
 

@@ -2,6 +2,10 @@ import { NextResponse } from 'next/server';
 import { generateAIQuestionsWithFailover } from '@/lib/aiService';
 import { addQuestion, getQuestions } from '@/lib/db';
 
+// Sinh cả lô câu cho 1 bài có thể kéo dài — xin ngưỡng thời gian tối đa của
+// serverless (Vercel Hobby: 60s với Fluid Compute).
+export const maxDuration = 60;
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();

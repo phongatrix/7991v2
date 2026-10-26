@@ -3,36 +3,57 @@ import path from 'path';
 import { Question, FullExamPackage, UserConfig, DEFAULT_GEMINI_MODEL } from './types';
 import { INITIAL_QUESTIONS } from './initialQuestions';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const QUESTIONS_FILE = path.join(DATA_DIR, 'questions.json');
-const EXAMS_FILE = path.join(DATA_DIR, 'exams.json');
-const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+// Trên serverless (Vercel) filesystem của dự án là CHỈ ĐỌC: mọi ghi dữ liệu phải
+// vào /tmp (tạm thời theo từng instance function). Chạy local thì ghi thẳng data/.
+// Lưu ý: dữ liệu ghi vào /tmp không bền vững giữa các lần deploy/khởi động lạnh —
+// bản đóng kèm code trong READ_DIR vẫn là nguồn gốc khi /tmp trống.
+const IS_SERVERLESS = Boolean(process.env.VERCEL);
+const READ_DIR = path.join(process.cwd(), 'data');
+const WRITE_DIR = IS_SERVERLESS ? path.join('/tmp', 'data') : READ_DIR;
 
-function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+const QUESTIONS_FILE = 'questions.json';
+const EXAMS_FILE = 'exams.json';
+const CONFIG_FILE = 'config.json';
+
+function readDataFile(name: string): string | null {
+  // Ưu tiên bản mới ghi gần nhất (WRITE_DIR), sau đó tới bản đóng kèm code
+  for (const dir of [WRITE_DIR, READ_DIR]) {
+    try {
+      const p = path.join(dir, name);
+      if (fs.existsSync(p)) return fs.readFileSync(p, 'utf-8');
+    } catch (err) {
+      console.error(`Error reading ${name} from ${dir}:`, err);
+    }
   }
+  return null;
+}
+
+function writeDataFile(name: string, content: string): void {
+  fs.mkdirSync(WRITE_DIR, { recursive: true });
+  fs.writeFileSync(path.join(WRITE_DIR, name), content, 'utf-8');
 }
 
 export function getQuestions(): Question[] {
-  ensureDataDir();
-  if (!fs.existsSync(QUESTIONS_FILE)) {
-    fs.writeFileSync(QUESTIONS_FILE, JSON.stringify(INITIAL_QUESTIONS, null, 2), 'utf-8');
-    return INITIAL_QUESTIONS;
+  const raw = readDataFile(QUESTIONS_FILE);
+  if (raw !== null) {
+    try {
+      return JSON.parse(raw);
+    } catch (err) {
+      console.error('Error parsing questions.json:', err);
+      return INITIAL_QUESTIONS;
+    }
   }
+  // Chưa có file (lần đầu chạy) — tạo bản gốc trong thư mục ghi được
   try {
-    const raw = fs.readFileSync(QUESTIONS_FILE, 'utf-8');
-    const questions: Question[] = JSON.parse(raw);
-    return questions;
+    writeDataFile(QUESTIONS_FILE, JSON.stringify(INITIAL_QUESTIONS, null, 2));
   } catch (err) {
-    console.error('Error reading questions.json:', err);
-    return INITIAL_QUESTIONS;
+    console.error('Error seeding questions.json:', err);
   }
+  return INITIAL_QUESTIONS;
 }
 
 export function saveQuestions(questions: Question[]): void {
-  ensureDataDir();
-  fs.writeFileSync(QUESTIONS_FILE, JSON.stringify(questions, null, 2), 'utf-8');
+  writeDataFile(QUESTIONS_FILE, JSON.stringify(questions, null, 2));
 }
 
 export function addQuestion(q: Question): Question {
@@ -58,12 +79,9 @@ export function deleteQuestion(id: string): boolean {
 }
 
 export function getExams(): FullExamPackage[] {
-  ensureDataDir();
-  if (!fs.existsSync(EXAMS_FILE)) {
-    return [];
-  }
+  const raw = readDataFile(EXAMS_FILE);
+  if (raw === null) return [];
   try {
-    const raw = fs.readFileSync(EXAMS_FILE, 'utf-8');
     return JSON.parse(raw);
   } catch (err) {
     return [];
@@ -71,7 +89,6 @@ export function getExams(): FullExamPackage[] {
 }
 
 export function saveExam(exam: FullExamPackage): void {
-  ensureDataDir();
   const all = getExams();
   const idx = all.findIndex(e => e.id === exam.id);
   if (idx >= 0) {
@@ -79,7 +96,7 @@ export function saveExam(exam: FullExamPackage): void {
   } else {
     all.unshift(exam);
   }
-  fs.writeFileSync(EXAMS_FILE, JSON.stringify(all, null, 2), 'utf-8');
+  writeDataFile(EXAMS_FILE, JSON.stringify(all, null, 2));
 }
 
 export function getExamById(id: string): FullExamPackage | null {
@@ -88,26 +105,24 @@ export function getExamById(id: string): FullExamPackage | null {
 }
 
 export function getConfig(): UserConfig {
-  ensureDataDir();
-  if (!fs.existsSync(CONFIG_FILE)) {
-    return {
-      geminiKey: process.env.GEMINI_API_KEY || "",
-      geminiModel: process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL
-    };
+  const raw = readDataFile(CONFIG_FILE);
+  if (raw !== null) {
+    try {
+      const parsed = JSON.parse(raw);
+      return {
+        geminiKey: parsed.geminiKey ?? (process.env.GEMINI_API_KEY || ""),
+        geminiModel: parsed.geminiModel ?? (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL)
+      };
+    } catch (err) {
+      return {};
+    }
   }
-  try {
-    const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
-    const parsed = JSON.parse(raw);
-    return {
-      geminiKey: parsed.geminiKey ?? (process.env.GEMINI_API_KEY || ""),
-      geminiModel: parsed.geminiModel ?? (process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL)
-    };
-  } catch (err) {
-    return {};
-  }
+  return {
+    geminiKey: process.env.GEMINI_API_KEY || "",
+    geminiModel: process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL
+  };
 }
 
 export function saveConfig(cfg: UserConfig): void {
-  ensureDataDir();
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8');
+  writeDataFile(CONFIG_FILE, JSON.stringify(cfg, null, 2));
 }

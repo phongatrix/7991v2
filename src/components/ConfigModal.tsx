@@ -92,16 +92,26 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
         })
       });
       if (res.ok) {
+        if (isVercel) {
+          alert('Đã lưu key — nhưng CHỈ TẠM THỜI trên server Vercel (mỗi phiên serverless riêng, có thể mất sau ít phút hoặc khi redeploy).\n\nĐể key mới có hiệu lực lâu dài: Vercel → Project → Settings → Environment Variables → cập nhật GEMINI_API_KEY → Redeploy.');
+        }
         setSaved(true);
         setTimeout(() => {
           setSaved(false);
           onClose();
         }, 1200);
+      } else {
+        const data = await res.json().catch(() => null);
+        alert(data?.error || 'Lưu cấu hình thất bại.');
       }
     } catch (err) {
       alert((err as Error).message);
     }
   };
+
+  // Trên bản deploy Vercel, dữ liệu server chỉ lưu tạm theo instance — cấu hình
+  // bền vững cần đặt biến môi trường GEMINI_API_KEY.
+  const isVercel = typeof window !== 'undefined' && /\.vercel\.app$/.test(window.location.hostname);
 
   // Gộp model mặc định (đặt đầu tiên) với danh sách model thật từ API
   const modelOptions: GeminiModelInfo[] = [{ id: DEFAULT_GEMINI_MODEL, name: 'Gemini 3.8 Flash (Mặc định)' }];
@@ -254,6 +264,15 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
               </div>
             )}
           </div>
+
+          {isVercel && (
+            <div className="p-2.5 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg flex items-start space-x-2">
+              <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0" />
+              <span>
+                Đang chạy trên Vercel: cấu hình lưu qua form chỉ tồn tại tạm trên server. Để dùng lâu dài, hãy thêm biến môi trường <b>GEMINI_API_KEY</b> trong Settings → Environment Variables của dự án Vercel.
+              </span>
+            </div>
+          )}
 
           <button
             onClick={handleSave}

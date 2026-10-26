@@ -15,6 +15,7 @@ interface Step2MatrixProps {
   onNext: () => void;
   onBack: () => void;
   isNextBusy?: boolean;
+  busyLabel?: string;
 }
 
 export const Step2Matrix: React.FC<Step2MatrixProps> = ({
@@ -25,7 +26,8 @@ export const Step2Matrix: React.FC<Step2MatrixProps> = ({
   setSelectedLessonIds,
   onNext,
   onBack,
-  isNextBusy = false
+  isNextBusy = false,
+  busyLabel
 }) => {
   const topics = CURRICULUM_DATA[grade] || [];
 
@@ -146,7 +148,7 @@ export const Step2Matrix: React.FC<Step2MatrixProps> = ({
             {isNextBusy ? (
               <>
                 <RefreshCw className="w-4 h-4 mr-1.5 animate-spin" />
-                <span>Đang sinh câu hỏi bổ sung…</span>
+                <span>{busyLabel || 'Đang sinh câu hỏi bổ sung…'}</span>
               </>
             ) : (
               <>
