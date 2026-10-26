@@ -146,7 +146,15 @@ export function validateAndCleanAIResponse(rawText: string): any[] {
   return parsed;
 }
 
-export async function callGemini(systemPrompt: string, userPrompt: string, apiKey: string, modelName: string = DEFAULT_GEMINI_MODEL): Promise<string> {
+export interface CallGeminiOptions {
+  /** Thời điểm (ms epoch) phải dừng hẳn — bảo đảm cả request server trả về
+   *  JSON TRƯỚC khi platform (Vercel) kill function vì quá giới hạn giờ. */
+  deadline?: number;
+}
+
+export const GEMINI_DEADLINE_MSG = 'Hết thời gian của đợt sinh này (server chủ động cắt để trả kết quả kịp)';
+
+export async function callGemini(systemPrompt: string, userPrompt: string, apiKey: string, modelName: string = DEFAULT_GEMINI_MODEL, opts: CallGeminiOptions = {}): Promise<string> {
   const makeBody = (withThinking: boolean) => ({
     system_instruction: {
       parts: [{ text: systemPrompt }]
@@ -167,13 +175,18 @@ export async function callGemini(systemPrompt: string, userPrompt: string, apiKe
     }
   });
 
+  // Thời gian còn lại tới deadline (không có deadline thì coi như 45s/lệnh gọi)
+  const remainingMs = () => (opts.deadline ? opts.deadline - Date.now() : 45_000);
+  const outOfTime = () => remainingMs() < 3_000;
+
   const call = async (model: string, withThinking: boolean): Promise<Response> => {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     return fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(makeBody(withThinking)),
-      signal: AbortSignal.timeout(90_000) // chặn treo vô hạn
+      // Không cho một lệnh gọi treo quá thời gian còn lại của deadline
+      signal: AbortSignal.timeout(Math.max(3_000, Math.min(45_000, remainingMs())))
     });
   };
 
@@ -186,10 +199,15 @@ export async function callGemini(systemPrompt: string, userPrompt: string, apiKe
 
   let lastError = 'Gọi Gemini thất bại';
 
+  outer:
   for (const model of chain) {
     let withThinking = true;
     // Mỗi model thử tối đa 3 lượt (chủ yếu để retry 503 quá tải thoáng qua)
     for (let attempt = 1; attempt <= 3; attempt++) {
+      if (outOfTime()) {
+        lastError = GEMINI_DEADLINE_MSG;
+        break outer; // hết ngân sách giờ → dừng cả chuỗi, trả lỗi ngay
+      }
       try {
         const res = await call(model, withThinking);
         if (res.ok) {
@@ -201,6 +219,10 @@ export async function callGemini(systemPrompt: string, userPrompt: string, apiKe
         }
         const errorText = await res.text();
         lastError = `Gemini API error (${res.status}): ${errorText.slice(0, 300)}`;
+        // Key sai thì đổi model cũng không cứu được — dừng cả chuỗi ngay
+        if (res.status === 400 && /API_KEY_INVALID|API key not valid/i.test(errorText)) {
+          throw new Error(lastError);
+        }
         if (res.status === 400 && /thinking/i.test(errorText)) {
           withThinking = false; // model không nhận thinkingConfig → gọi lại ngay không kèm
           continue;
@@ -209,7 +231,7 @@ export async function callGemini(systemPrompt: string, userPrompt: string, apiKe
           break; // model bị khai tử → sang model kế tiếp
         }
         if (res.status === 503 || res.status === 429) {
-          await sleep(3000); // quá tải: chờ chút rồi thử lại cùng model
+          await sleep(Math.min(3_000, Math.max(0, remainingMs()))); // quá tải: chờ trong ngân sách giờ còn lại
           continue;
         }
         break; // lỗi khác → sang model kế tiếp
@@ -236,6 +258,8 @@ export interface SingleQuestionParams {
   level: Level;
   samples?: string;
   existingQuestions?: Question[]; // ngân hàng hiện có — để kiểm tra trùng kiến thức
+  /** Thời điểm (ms epoch) phải dừng — không bắt đầu lượt sinh mới sau mốc này */
+  deadline?: number;
 }
 
 export function buildSingleQuestionPrompt(params: SingleQuestionParams & { avoidContents?: string[] }): string {
@@ -303,9 +327,10 @@ export async function generateSingleAIQuestion(params: SingleQuestionParams): Pr
   const MAX_ATTEMPTS = 4;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (params.deadline && Date.now() >= params.deadline - 1_000) break; // hết giờ đợt này
     try {
       const userPrompt = buildSingleQuestionPrompt({ ...params, avoidContents });
-      const raw = await callGemini(SYSTEM_PROMPT, userPrompt, apiKey, config.geminiModel || DEFAULT_GEMINI_MODEL);
+      const raw = await callGemini(SYSTEM_PROMPT, userPrompt, apiKey, config.geminiModel || DEFAULT_GEMINI_MODEL, { deadline: params.deadline });
       const parsed = validateAndCleanAIResponse(raw);
       const item = parsed[0];
       if (!item) throw new Error('AI trả về mảng rỗng');
@@ -352,7 +377,10 @@ export async function generateSingleAIQuestion(params: SingleQuestionParams): Pr
       return candidate;
     } catch (err) {
       lastError = err;
-      console.warn(`Sinh 1 câu hỏi — lượt ${attempt} thất bại:`, (err as Error).message);
+      const msg = (err as Error).message || '';
+      console.warn(`Sinh 1 câu hỏi — lượt ${attempt} thất bại:`, msg);
+      // Key sai/hết hạn mức: thử lại cũng vô nghĩa — ném ngay để báo cho người dùng
+      if (/API_KEY_INVALID|API key not valid/i.test(msg)) throw err;
     }
   }
 
@@ -362,7 +390,7 @@ export async function generateSingleAIQuestion(params: SingleQuestionParams): Pr
   throw new Error(`Không thể sinh câu hỏi qua AI: ${lastError ? lastError.message : 'lỗi không xác định'}`);
 }
 
-export async function generateAIQuestionsWithFailover(params: GenerateAIQuestionsParams, lessonId: string, existingQuestions: Question[] = []): Promise<Question[]> {
+export async function generateAIQuestionsWithFailover(params: GenerateAIQuestionsParams, lessonId: string, existingQuestions: Question[] = [], deadline?: number): Promise<Question[]> {
   const config = getConfig();
   const apiKey = config.geminiKey || process.env.GEMINI_API_KEY;
   const userPrompt = buildUserPrompt(params);
@@ -374,8 +402,9 @@ export async function generateAIQuestionsWithFailover(params: GenerateAIQuestion
   // Try Gemini first (up to 3 retries)
   if (apiKey) {
     for (let attempt = 1; attempt <= 3; attempt++) {
+      if (deadline && Date.now() >= deadline - 1_000) break; // hết giờ đợt này
       try {
-        rawOutput = await callGemini(SYSTEM_PROMPT, userPrompt, apiKey, config.geminiModel || DEFAULT_GEMINI_MODEL);
+        rawOutput = await callGemini(SYSTEM_PROMPT, userPrompt, apiKey, config.geminiModel || DEFAULT_GEMINI_MODEL, { deadline });
         const parsed = validateAndCleanAIResponse(rawOutput);
         batch = parsed.map((item, idx) => ({
           ...item,
@@ -412,6 +441,11 @@ export async function generateAIQuestionsWithFailover(params: GenerateAIQuestion
       continue;
     }
     console.warn(`Câu sinh lô trùng kiến thức (${dups.length} câu) → sinh lại: ${q.q.slice(0, 80)}`);
+    if (deadline && Date.now() >= deadline - 1_000) {
+      dropped++;
+      console.warn('Hết thời gian đợt sinh, bỏ qua câu trùng chưa xử lý:', q.q.slice(0, 80));
+      continue;
+    }
     try {
       const replacement = await generateSingleAIQuestion({
         grade: params.grade,
@@ -422,7 +456,8 @@ export async function generateAIQuestionsWithFailover(params: GenerateAIQuestion
         lessonDescription: params.lessonDescription,
         type: q.type,
         level: q.level,
-        existingQuestions: [...reference, ...accepted]
+        existingQuestions: [...reference, ...accepted],
+        deadline
       });
       accepted.push(replacement);
       regenerated++;

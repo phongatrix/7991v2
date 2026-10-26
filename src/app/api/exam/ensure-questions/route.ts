@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { planMatrixPicks } from '@/lib/examGenerator';
 import { getQuestions, addQuestion, getConfig } from '@/lib/db';
-import { generateSingleAIQuestion } from '@/lib/aiService';
+import { generateSingleAIQuestion, GEMINI_DEADLINE_MSG } from '@/lib/aiService';
 import { CURRICULUM_DATA, Lesson, Topic } from '@/lib/curriculumData';
 import { ExamMatrix, Question } from '@/lib/types';
 
@@ -10,8 +10,13 @@ import { ExamMatrix, Question } from '@/lib/types';
 // số câu còn thiếu (`remaining`) để client gọi tiếp đợt sau.
 export const maxDuration = 60;
 
-// Dừng sinh trước khi chạm ngưỡng kill của platform, chừa chỗ trả response.
-const TIME_BUDGET_MS = 42_000;
+// Vercel: chỉ BẮT ĐẦU câu mới trong 30s đầu, mỗi câu có deadline riêng, toàn
+// request tối đa ~52s (< 60s) — đảm bảo luôn trả được JSON thay vì bị kill.
+// Local không bị platform kill nên ngân sách giờ thoáng hơn.
+const IS_VERCEL = Boolean(process.env.VERCEL);
+const NEW_QUESTION_GATE_MS = IS_VERCEL ? 30_000 : 8 * 60_000;
+const HARD_CAP_MS = IS_VERCEL ? 52_000 : 10 * 60_000;
+const PER_QUESTION_SLICE_MS = IS_VERCEL ? 22_000 : 60_000;
 // Số câu tối đa mặc định mỗi request — client có thể gửi giá trị nhỏ hơn.
 const DEFAULT_MAX_GENERATE = 5;
 
@@ -76,9 +81,12 @@ export async function POST(request: Request) {
         continue;
       }
       for (let i = 0; i < gap.missing && generated.length < maxGenerate; i++) {
-        if (Date.now() - startedAt > TIME_BUDGET_MS) {
-          break outer; // sắp chạm giới hạn thời gian — trả về để client gọi đợt tiếp theo
+        const elapsed = Date.now() - startedAt;
+        if (elapsed > NEW_QUESTION_GATE_MS || elapsed > HARD_CAP_MS - PER_QUESTION_SLICE_MS) {
+          break outer; // sắp hết ngân sách giờ — trả về để client gọi đợt tiếp theo
         }
+        // Deadline cho riêng câu này: nằm gọn trong giới hạn cứng của request
+        const deadline = Math.min(startedAt + HARD_CAP_MS, Date.now() + PER_QUESTION_SLICE_MS);
         try {
           const q = await generateSingleAIQuestion({
             grade: matrix.grade,
@@ -89,13 +97,18 @@ export async function POST(request: Request) {
             lessonDescription: info.lesson.description,
             type: gap.type,
             level: gap.level,
-            existingQuestions: bankNow
+            existingQuestions: bankNow,
+            deadline
           });
           addQuestion(q);
           bankNow.push(q);
           generated.push(q);
         } catch (e) {
-          errors.push(`${info.lesson.fullName} — ${gap.type}/${gap.level}: ${(e as Error).message}`);
+          const msg = (e as Error).message || '';
+          if (msg.includes(GEMINI_DEADLINE_MSG)) {
+            break outer; // hết giờ đợt này (bình thường với cơ chế chia đợt) — không tính là lỗi
+          }
+          errors.push(`${info.lesson.fullName} — ${gap.type}/${gap.level}: ${msg}`);
           break; // bỏ qua gap này, tránh treo cả lượt sinh
         }
       }

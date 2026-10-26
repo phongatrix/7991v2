@@ -116,6 +116,8 @@ export default function Home() {
     const allErrors: string[] = [];
     let platformFails = 0;
     let stallRounds = 0;
+    let chunkSize = 5; // số câu mỗi request — tự hạ khi server bị ngắt giữa chừng
+    let lastRemaining = 0;
 
     const mergeGeneratedIntoBank = () => {
       if (allGenerated.length === 0) return;
@@ -130,21 +132,26 @@ export default function Home() {
         const res = await fetch('/api/exam/ensure-questions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ matrix: m, maxGenerate: 5, extraQuestions: allGenerated })
+          body: JSON.stringify({ matrix: m, maxGenerate: chunkSize, extraQuestions: allGenerated })
         });
         const text = await res.text();
         let data: any;
         try {
           data = JSON.parse(text);
         } catch {
-          // Máy chủ trả trang lỗi của platform (function bị kill do quá giới hạn
-          // thời gian/quá tải) thay vì JSON — thử lại đợt này rồi mới bỏ cuộc.
+          // Máy chủ trả trang lỗi của platform (function bị kill/quá tải) thay vì
+          // JSON — hạ số câu mỗi đợt rồi thử lại, chỉ bỏ cuộc sau nhiều lần.
           platformFails += 1;
-          if (platformFails >= 3) {
-            throw new Error(`Máy chủ liên tục ngắt kết nối khi sinh câu hỏi (giới hạn thời gian/quá tải của Vercel). Đã sinh được ${allGenerated.length} câu — vui lòng thử lại tiếp.`);
+          chunkSize = Math.max(1, Math.floor(chunkSize / 2));
+          if (platformFails >= 6) {
+            throw new Error(
+              `Máy chủ liên tục ngắt kết nối khi sinh câu hỏi (đã thử ${platformFails} lần, sinh được ${allGenerated.length} câu). ` +
+              'Nguyên nhân thường gặp: (1) API key Gemini hết hạn mức hoặc sai (429/400) — kiểm tra key trong "Cấu hình API Key"; ' +
+              '(2) giới hạn thời gian Vercel — vào Settings → Functions của project bật Fluid Compute rồi bấm thử lại.'
+            );
           }
-          await new Promise(r => setTimeout(r, 2500));
-          round -= 1; // thử lại đợt vừa rồi
+          await new Promise(r => setTimeout(r, 4000));
+          round -= 1; // thử lại đợt vừa rồi với số câu nhỏ hơn
           continue;
         }
 
@@ -162,6 +169,7 @@ export default function Home() {
         }
         allErrors.push(...(data.errors || []));
         const remaining: number = data.remaining ?? 0;
+        lastRemaining = remaining;
         if (remaining <= 0) break;
 
         setEnsureLabel(`Đang sinh câu hỏi bổ sung… ${allGenerated.length}/${allGenerated.length + remaining} câu`);
@@ -176,7 +184,13 @@ export default function Home() {
 
       mergeGeneratedIntoBank();
       if (allErrors.length) {
-        alert(`Đã sinh thêm ${allGenerated.length} câu mới vào ngân hàng, nhưng có một số câu không sinh được:\n\n- ${allErrors.slice(0, 5).join('\n- ')}`);
+        alert(`Đã sinh thêm ${allGenerated.length} câu mới vào ngân hàng, nhưng có một số câu không sinh được (còn thiếu ${lastRemaining} câu):\n\n- ${allErrors.slice(0, 5).join('\n- ')}`);
+      } else if (lastRemaining > 0 && allGenerated.length === 0) {
+        alert(
+          `Không sinh được câu nào cho ma trận này (còn thiếu ${lastRemaining} câu). ` +
+          'Vui lòng kiểm tra: (1) API key Gemini còn hạn mức không (bấm "Cấu hình API Key" → Test); ' +
+          '(2) nếu đang dùng Vercel, bật Fluid Compute trong Settings → Functions rồi redeploy.'
+        );
       }
       return allGenerated;
     } catch (err) {

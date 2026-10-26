@@ -50,6 +50,9 @@ export async function POST(request: Request) {
       return `Mẫu ${i + 1} (mức ${q.level}, mã ${q.yccd}): ${q.q}\n   → ${answerSummary}`;
     }).join('\n');
 
+    // Trên Vercel phải xong trong ~50s để kịp trả JSON trước khi bị kill
+    const deadline = process.env.VERCEL ? Date.now() + 50_000 : undefined;
+
     const question = await generateSingleAIQuestion({
       grade,
       lessonId,
@@ -59,7 +62,8 @@ export async function POST(request: Request) {
       type,
       level,
       samples,
-      existingQuestions: all
+      existingQuestions: all,
+      deadline
     });
 
     addQuestion(question);

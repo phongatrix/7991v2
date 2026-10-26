@@ -27,6 +27,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Thiếu thông tin bài học hoặc chủ đề' }, { status: 400 });
     }
 
+    // Trên Vercel phải xong trong ~50s để kịp trả JSON trước khi bị kill
+    const deadline = process.env.VERCEL ? Date.now() + 50_000 : undefined;
+
     const questions = await generateAIQuestionsWithFailover({
       grade,
       subject,
@@ -37,7 +40,7 @@ export async function POST(request: Request) {
       tf_count, tf_b, tf_h, tf_vd,
       sa_b, sa_h, sa_vd,
       tl_b, tl_h, tl_vd
-    }, lessonId, getQuestions());
+    }, lessonId, getQuestions(), deadline);
 
     if (autoSave) {
       for (const q of questions) {

@@ -118,7 +118,7 @@ git push           # Vercel tự deploy lại nếu đã nối repo (Cách B)
 | Vercel build lỗi "Module not found" | Chưa commit file mới: `git add . && git push` |
 | AI báo "Chưa cấu hình API Key" trên Vercel | Thiếu env `GEMINI_API_KEY` → thêm trong Settings → Environment Variables → **Redeploy** |
 | AI báo model 404 / 503 quá tải | Hệ thống tự fallback sang model dự phòng; nếu vẫn lỗi, đợi vài phút (Google quá tải) hoặc đổi `GEMINI_MODEL` |
-| Lỗi `Unexpected token 'A', "An error o..."` khi sinh câu hỏi | Serverless function bị Vercel kill do vượt giới hạn thời gian (Hobby tối đa 60s/function). Hệ thống đã chuyển sang **sinh câu hỏi theo từng đợt nhỏ** (mỗi request ≤ 5 câu) và tự gọi lại tới khi đủ — nếu vẫn gặp khi Google quá tải, bấm thử lại |
+| Lỗi `Unexpected token 'A', "An error o..."` hoặc "Máy chủ liên tục ngắt kết nối khi sinh câu hỏi" | Serverless function bị Vercel kill do vượt giới hạn thời gian (Hobby tối đa 60s/function). Hệ thống đã sinh câu **theo đợt nhỏ có deadline** (mỗi request ≤ 5 câu, mỗi câu ≤ 22s, tự cắt trước 52s) và tự thử lại với đợt nhỏ hơn. Nếu vẫn lỗi: (1) kiểm tra API key Gemini còn hạn mức (bấm Test trong Cấu hình API Key); (2) bật **Fluid Compute** (Vercel → Settings → Functions) rồi redeploy |
 | Deploy lỗi "Invalid Serverless Function maxDuration" | Plan Vercel không cho 60s → bật **Fluid Compute** (Settings → Functions) hoặc hạ `maxDuration` trong `src/app/api/**/route.ts` xuống 10 |
 | Câu hỏi mới biến mất sau một thời gian | Đúng giới hạn serverless mục 4 → chuyển sang VPS/DB |
 | Push bị từ chối vì file lớn | Kiểm tra `git status` — không được commit `node_modules/`, `.next/` (`.gitignore` đã lo) |
